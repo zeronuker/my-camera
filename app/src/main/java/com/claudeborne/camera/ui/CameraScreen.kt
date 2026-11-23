@@ -66,6 +66,22 @@ import com.claudeborne.camera.camera.CameraEngine
 import com.claudeborne.camera.camera.CameraEngine.Facing
 import com.claudeborne.camera.camera.ZoomStops
 import com.claudeborne.camera.gl.PreviewRenderer
+import com.claudeborne.camera.capture.Flash
+import com.claudeborne.camera.capture.LastLocation
+import com.claudeborne.camera.capture.PhotoRules
+import com.claudeborne.camera.capture.PhotoSaver
+import com.claudeborne.camera.data.Settings as AppSettings
+import android.content.ActivityNotFoundException
+import android.media.MediaActionSound
+import android.view.OrientationEventListener
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -95,6 +111,14 @@ fun CameraScreen(onSettings: () -> Unit) {
     var pinching by remember { mutableStateOf(false) }
     var showedPicture by remember { mutableStateOf(false) }
     var zoomJob by remember { mutableStateOf<Job?>(null) }
+    var flash by remember { mutableStateOf(Flash.OFF) }
+    var toast by remember { mutableStateOf<Pair<String, Int>?>(null) } // text and a counter, so the same text can show twice in a row
+    var screenFlash by remember { mutableStateOf(false) }
+    var shutterTick by remember { mutableIntStateOf(0) }
+    var deviceDegrees by remember { mutableIntStateOf(0) }
+    var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
+    val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
+    fun say(text: String) { toast = text to (toast?.second ?: 0) + 1 }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         permitted = ok
@@ -117,12 +141,67 @@ fun CameraScreen(onSettings: () -> Unit) {
             owner.lifecycle.removeObserver(observer)
             engine.close()
             engine.release()
+            sound.release()
         }
     }
     LaunchedEffect(permitted, resumed, texture, facing) {
         val st = texture
-        if (permitted && resumed && st != null) engine.open(facing, st)
+        val view = glView
+        if (permitted && resumed && st != null && view != null && view.height > 0) {
+            // the long side over the short side (about 2.2 on this phone): camera sizes are listed landscape
+            engine.open(facing, st, view.height.toFloat() / view.width,CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie))
+        }
     }
+
+    // photos arrive on the camera thread; saving continues on its own thread even if this screen goes away
+    DisposableEffect(engine) {
+        engine.listener = object : CameraEngine.Listener {
+            override fun onShutter() {
+                if (AppSettings.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+                shutterTick++
+            }
+
+            override fun onPhoto(photo: CameraEngine.Photo) {
+                screenFlash = false
+                val exif = if (photo.mirrored) PhotoRules.exifOrientation(photo.jpegOrientation, mirrored = true) else null
+                PhotoSaver.save(context, photo.bytes, photo.format, exif, System.currentTimeMillis()) { result ->
+                    result.onSuccess { uri ->
+                        AppSettings.rememberLastPhoto(uri.toString())
+                        scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                    }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
+                }
+            }
+
+            override fun onFailed(message: String) {
+                screenFlash = false
+                say(message)
+            }
+        }
+        onDispose { engine.listener = null }
+    }
+    LaunchedEffect(Unit) { // the last-shot button after a restart
+        val saved = AppSettings.lastPhotoUri
+        if (saved.isNotEmpty()) thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, Uri.parse(saved)) }?.asImageBitmap()
+    }
+    // "Auto-rotate": photos follow how the phone is held, though the screen stays portrait; "Follow system" keeps them upright for portrait
+    DisposableEffect(AppSettings.photoAutoRotate, resumed) {
+        deviceDegrees = 0
+        val tilt = object : OrientationEventListener(context) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (orientation != ORIENTATION_UNKNOWN) deviceDegrees = PhotoRules.deviceDegrees(orientation)
+            }
+        }
+        if (AppSettings.photoAutoRotate && resumed) tilt.enable()
+        onDispose { tilt.disable() }
+    }
+    // front "flash" is the screen: full white at full brightness while the photo is taken
+    DisposableEffect(screenFlash) {
+        val window = (context as? Activity)?.window
+        val before = window?.attributes?.screenBrightness
+        if (screenFlash && window != null) window.attributes = window.attributes.also { it.screenBrightness = 1f }
+        onDispose { if (window != null && before != null) window.attributes = window.attributes.also { it.screenBrightness = before } }
+    }
+    LaunchedEffect(toast) { if (toast != null) { delay(1600); toast = null } }
     LaunchedEffect(Unit) { snapshotFlow { zoom }.collect { engine.setZoom(it) } }
     val info = engine.info
     LaunchedEffect(info) {
@@ -144,7 +223,33 @@ fun CameraScreen(onSettings: () -> Unit) {
     fun flip() {
         renderer.freeze() // keep the last picture while the other camera starts
         zoom = 1f
+        flash = Flash.OFF
+        engine.setFlash(Flash.OFF)
         facing = if (facing == Facing.BACK) Facing.FRONT else Facing.BACK
+    }
+    fun cycleFlash() {
+        flash = flash.next(rear = facing == Facing.BACK)
+        engine.setFlash(flash)
+        say("Flash: ${flash.label}")
+    }
+    fun shoot() {
+        val sensor = info?.sensorOrientation ?: return
+        if (state != CameraEngine.State.Streaming || engine.capturing) return
+        if (!PhotoSaver.hasRoom()) return say("Storage is full")
+        val front = facing == Facing.FRONT
+        scope.launch {
+            if (front && flash == Flash.ON) { screenFlash = true; delay(350) } // let the screen light the face first
+            val place = if (AppSettings.locationTags) LastLocation.get(context) else null
+            engine.takePhoto(CameraEngine.Shot(flash, PhotoRules.jpegOrientation(sensor, deviceDegrees, front), place))
+        }
+    }
+    fun openLast() {
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(AppSettings.lastPhotoUri), "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        try {
+            context.startActivity(Intent(view).setPackage(GALLERY))
+        } catch (_: ActivityNotFoundException) {
+            runCatching { context.startActivity(Intent.createChooser(view, "Open with")) }
+        }
     }
     fun goTo(ratio: Float) {
         zoomJob?.cancel()
@@ -175,11 +280,19 @@ fun CameraScreen(onSettings: () -> Unit) {
         val cover by animateFloatAsState(if (showedPicture) 0f else 1f, tween(MOTION_MS), label = "cover")
         if (cover > 0f) Box(Modifier.fillMaxSize().alpha(cover).background(Color.Black))
 
+        // the shutter's own blink and the front screen flash (allowed to be instant: they are capture feedback)
+        val blink = remember { Animatable(0f) }
+        LaunchedEffect(shutterTick) { if (shutterTick > 0) { blink.snapTo(0.35f); blink.animateTo(0f, tween(160)) } }
+        if (blink.value > 0f) Box(Modifier.fillMaxSize().alpha(blink.value).background(Color.White))
+        if (screenFlash) Box(Modifier.fillMaxSize().background(Color.White))
+
         if (permitted) {
             Controls(
                 zoom = zoom, zoomMin = zoomMin, zoomMax = zoomMax, front = facing == Facing.FRONT, showRuler = pinching,
-                onPill = ::goTo, onFlip = ::flip, onSettings = onSettings,
+                flash = flash, thumb = thumb, saving = PhotoSaver.saving > 0, canShoot = state == CameraEngine.State.Streaming && !engine.capturing,
+                onPill = ::goTo, onFlip = ::flip, onSettings = onSettings, onFlash = ::cycleFlash, onShoot = ::shoot, onThumb = ::openLast,
             )
+            Toast(toast)
             ErrorOverlay(state, onRetry = engine::retry)
         } else {
             PermissionScreen(refused, context) { askCamera.launch(Manifest.permission.CAMERA) }
@@ -190,9 +303,18 @@ fun CameraScreen(onSettings: () -> Unit) {
 @Composable
 private fun Controls(
     zoom: Float, zoomMin: Float, zoomMax: Float, front: Boolean, showRuler: Boolean,
-    onPill: (Float) -> Unit, onFlip: () -> Unit, onSettings: () -> Unit,
+    flash: Flash, thumb: ImageBitmap?, saving: Boolean, canShoot: Boolean,
+    onPill: (Float) -> Unit, onFlip: () -> Unit, onSettings: () -> Unit, onFlash: () -> Unit, onShoot: () -> Unit, onThumb: () -> Unit,
 ) {
     Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
+        Box(
+            Modifier.align(Alignment.TopStart).padding(16.dp).size(44.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.4f)).clickable(onClick = onFlash),
+            Alignment.Center,
+        ) {
+            val on = flash == Flash.ON || flash == Flash.TORCH
+            CbIcon(if (flash == Flash.OFF) Icon.FLASH_OFF else Icon.FLASH, glide(flash == Flash.TORCH, DarkCb.mint, Color.White), filled = on, size = 22.dp)
+            if (flash == Flash.AUTO) Text("A", Modifier.align(Alignment.BottomEnd).padding(end = 7.dp, bottom = 5.dp), style = monoStyle(Color.White, 0.sp).copy(fontSize = 10.sp))
+        }
         Box(
             Modifier.align(Alignment.TopEnd).padding(16.dp).size(44.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.4f)).clickable(onClick = onSettings),
             Alignment.Center,
@@ -204,8 +326,13 @@ private fun Controls(
                 Visible(!showRuler && !front, enter = popEnter, exit = popExit) { LensPills(zoom, onPill) }
             }
             Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                Box(Modifier.size(52.dp)) // the last-shot thumbnail comes with saving (part B)
-                Shutter()
+                Column(Modifier.size(52.dp), Arrangement.spacedBy(4.dp, Alignment.Bottom)) {
+                    Visible(saving, enter = popEnter, exit = popExit) { ProgressBar(null, Modifier.fillMaxWidth()) } // a photo is being written
+                    if (thumb != null) {
+                        Image(thumb, "Last photo", Modifier.size(52.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(10.dp)).clickable(onClick = onThumb), contentScale = ContentScale.Crop)
+                    }
+                }
+                Shutter(canShoot, onShoot)
                 Box(Modifier.size(52.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.4f)).clickable(onClick = onFlip), Alignment.Center) {
                     CbIcon(Icon.REFRESH, Color.White, size = 26.dp)
                 }
@@ -217,12 +344,27 @@ private fun Controls(
     }
 }
 
-/** Round, as in the stock app; it only squishes when pressed until capture arrives in part B. */
+/** Round, as in the stock app; it squishes when pressed and dims while a photo is being taken. */
 @Composable
-private fun Shutter() {
+private fun Shutter(enabled: Boolean, onClick: () -> Unit) {
     val press = remember { MutableInteractionSource() }
-    Box(Modifier.size(78.dp).pressScale(press, 0.92f).border(4.dp, Color.White, CircleShape).padding(7.dp).clip(CircleShape).background(Color.White).clickable(press, null) { })
+    val ink by animateColorAsState(if (enabled) Color.White else Color.White.copy(alpha = 0.55f), tween(MOTION_FAST_MS), label = "shutter")
+    Box(Modifier.size(78.dp).pressScale(press, 0.92f).border(4.dp, Color.White, CircleShape).padding(7.dp).clip(CircleShape).background(ink).clickable(press, null, enabled = enabled, onClick = onClick))
 }
+
+/** A short message near the top ("Flash: Off", "Storage is full") that fades in and out. */
+@Composable
+private fun Toast(message: Pair<String, Int>?) {
+    var last by remember { mutableStateOf(message?.first.orEmpty()) }
+    if (message != null) last = message.first
+    Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing).padding(top = 74.dp), Alignment.TopCenter) {
+        Visible(message != null, enter = popEnter, exit = popExit) {
+            Text(last.uppercase(), Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 18.dp, vertical = 9.dp), style = monoStyle(DarkCb.ink, 1.5.sp).copy(fontSize = 12.sp))
+        }
+    }
+}
+
+private const val GALLERY = "com.claudeborne.gallerymanager"
 
 @Composable
 private fun LensPills(zoom: Float, onPick: (Float) -> Unit) {

@@ -7,5 +7,6 @@ class CameraApp : Application() {
     override fun onCreate() {
         super.onCreate()
         CrashLog.install(this)
+        com.claudeborne.camera.data.Settings.init(this)
     }
 }

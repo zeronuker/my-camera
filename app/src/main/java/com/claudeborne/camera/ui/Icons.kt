@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER }
+enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF }
 
 /** Line icons drawn on a 24 x 24 grid, so the app needs no icon library and they match the brand's thin outlines. */
 @Composable
@@ -42,6 +42,10 @@ fun CbIcon(icon: Icon, color: Color, modifier: Modifier = Modifier, filled: Bool
         fun DrawScope.round(x: Float, y: Float, w: Float, h: Float, r: Float) = drawRoundRect(color, p(x, y), Size(w * k, h * k), CornerRadius(r * k), style = line)
 
         when (icon) {
+            Icon.FLASH, Icon.FLASH_OFF -> {
+                shape(poly(true, 13.5f, 2.5f, 6f, 13.5f, 11f, 13.5f, 10.5f, 21.5f, 18f, 10f, 13f, 10f), fill = filled)
+                if (icon == Icon.FLASH_OFF) seg(4f, 4f, 20f, 20f)
+            }
             Icon.SHARE -> {
                 seg(8.2f, 10.9f, 15.8f, 6.1f)
                 seg(8.2f, 13.1f, 15.8f, 17.9f)
