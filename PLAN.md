@@ -228,6 +228,16 @@ Done when: the QS tile and the launcher shortcuts open this app, and a lock-scre
 - Shooting methods: tap to capture, show palm → 3 s timer.
 - Smart suggestions: "Move further away" in Portrait, "Try Night" in low light, lens-smudge hint is **not** promised.
 
+**Built in Phase 6 (facts learned, details in the hand-over note):**
+- Libraries added (owner OK'd): ML Kit Barcode Scanning and Text Recognition Latin + Chinese (bundled, have x86_64), OpenCV 4.10 (`org.opencv:opencv`, all ABIs in debug, arm64 in release), MediaPipe tasks-vision 0.10.14 plus the bundled `hand_landmarker.task` model. **MediaPipe ships no x86_64 library, so Show palm is hidden on the emulator** (`HandScanner.supported`). The release APK grew from about 2 MB to about 65 MB (arm64).
+- The GL pipeline hands small (640 px wide) look-free, unmirrored copies of the live picture to one scanner thread (`PreviewRenderer.analysis`, `scan/FrameScanner.kt`); frames that arrive while it is busy are dropped. QR (Photo, ~450 ms), page text (Text mode ~500 ms; Photo looks every third pass), page outline (Scan Docs) and palm (Photo) share it.
+- Text mode and Scan Docs keep no photo of the scene: the shutter reads it (OCR with Latin, plus Chinese when it finds Chinese) or opens the page editor. They take one picture at once (no timer, interval or burst). Modes in the strip now: MASTER · VIDEO · PHOTO · TEXT · SCAN DOCS · SLO-MO · TIME-LAPSE · PRO VIDEO · TILT-SHIFT · UNDERWATER.
+- Scan Docs: OpenCV finds the page (Canny and Otsu, biggest convex four-sided shape, 15 % of the frame at least; tested on a generated page: corners within 1 %), the editor has four draggable corners and COLOUR / GREY / B&W previews (shadow-flattening divide, adaptive threshold for B&W), pages are kept as JPEGs, saved as one PDF in `Documents/Scans` (about 190 dpi) or as photos in `DCIM/Camera`. Pages live in memory until saved or discarded.
+- QR chip: OPEN only for http, https, tel, mailto, sms, geo; Wi-Fi codes show only the network name; nothing opens without a tap; no OPEN on a lock-screen launch.
+- Google Lens: the frame is shared to `com.google.android.googlequicksearchbox/com.google.android.apps.search.lens.LensShareEntryPointActivity` (not verified on the phone); the button is hidden when that activity does not exist.
+- Show palm: all four fingers stretched and the thumb out for three looks in a row starts a 3 s timer, then one photo. Default on, as stock.
+- Smart suggestions: the switch exists and gates "Try Text mode". "Try Night" and "Move further away" come with Night and Portrait in Phase 7 (they need a mode to point to).
+
 ### Phase 7 — computational photography (Opus)
 
 Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extension sessions give a finished JPEG: no manual controls, no RAW, and our looks (filters, Soft light, styles) are applied to the decoded photo afterwards, not live in the session; preview still runs through our GL pipeline.
