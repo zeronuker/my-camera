@@ -280,8 +280,8 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 
 | Done | Feature | Tag | Phase |
 |---|---|---|---|
-| [ ] | Self-update from GitHub Releases | OK | 0 |
-| [ ] | Diagnostics / probe report | OK | 0 |
+| [x] | Self-update from GitHub Releases | OK | 0 |
+| [x] | Diagnostics / probe report | OK | 0 |
 | [ ] | "Camera Dev" side-by-side build, emulator, scrcpy | OK | 0 |
 | [ ] | Crash log + share | OK | 0 |
 | [ ] | Permission flow + denied screen | OK | 1 |
