@@ -67,6 +67,7 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     VIDEO("VIDEO", VideoStyle.NORMAL),
     PHOTO("PHOTO", null),
     TEXT("TEXT", null),
+    SCAN("SCAN DOCS", null),
     SLOMO("SLO-MO", VideoStyle.SLOMO),
     TIMELAPSE("TIME-LAPSE", VideoStyle.TIMELAPSE),
     PROVIDEO("PRO VIDEO", VideoStyle.NORMAL),
@@ -76,6 +77,8 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
 
     val isVideo get() = style != null
     val isMaster get() = this == MASTER
+    /** Text and Scan Docs read what is in front of the camera instead of saving a photo of it. */
+    val isScanner get() = this == TEXT || this == SCAN
 
     /** The neighbour in the strip (only among the [shown] modes), or null at its ends. */
     fun step(by: Int, shown: List<Mode> = entries): Mode? = shown.getOrNull(shown.indexOf(this) + by)
