@@ -210,6 +210,14 @@ Done when: the QS tile and the launcher shortcuts open this app, and a lock-scre
 - Composition: grid None / Grid / Diagonal lines / Golden spiral; level.
 - Tilt-shift mode (blur band, movable/rotatable), Underwater mode (colour correction + volume keys as shutter).
 
+**Built in Phase 5 (facts learned, details in the hand-over note):**
+- One effect chain (`gl/Effects.kt`: filter LUT, Soft light, style controls, vignette, Underwater, Tilt-shift) is used by the live picture, the video encoder pass and the offscreen pass for saved photos (`gl/PhotoLook.kt`), so all three match. A photo with a look or watermark is decoded, turned upright, run through the shader, and saved as a **plain JPEG** (Ultra HDR gain map and HEIF cannot survive; RAW/DNG is never touched). A photo with no look and no watermark is saved exactly as before.
+- 14 own looks (+ Original), baked into a 16x16x16 LUT from a small grade each. Filters panel (Photo, Video, Time-lapse, Tilt-shift, Underwater) from the button right of the lens pills; Master has the styles button there instead (6 preset pages, 7 controls, reset). Scenes (Stage, Silhouette, Fireworks) open by tapping the VIDEO label again; each is an exposure shift plus a tone preset.
+- **120/240 fps video and slo-mo get none of this** (the camera writes straight into the encoder): the filter button is hidden there and no look is applied. 30/60 fps video and time-lapse get filters, Soft light, scenes and the watermark.
+- Master styles: Vignette is a gentle corner darkening and defaults **Off** (the stock default On is the phone's own lens look, which an app cannot switch), so a plain Master photo stays untouched. Soft light is shared between the Photo menu (None / Weak / Medium / Strong) and the Master styles dial (all 10 positions).
+- Watermark: Settings page as the stock one; "Shot on OnePlus 15" (model CPH2747 mapped to its name), location as coordinates (last known place), date and time, custom text, size, position. Photos burn it on the CPU after the shader; video draws it as a texture in the encoder pass.
+- Composition: grid / diagonal lines / golden spiral and the level line, drawn on the screen only. Tilt-shift mode: drag moves the band, pinch resizes, two-finger twist turns it. Underwater mode: colour correction, volume keys are the shutter whatever the volume setting says. Modes in the strip now end with TILT-SHIFT and UNDERWATER (Phase 10 reorders).
+
 ### Phase 6 — text, QR, Lens, doc scanner, gestures
 
 - QR scanning in Photo mode (setting), result chip → open / copy / share.
