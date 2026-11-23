@@ -23,9 +23,12 @@ import android.view.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.claudeborne.camera.capture.Ev
 import com.claudeborne.camera.capture.Flash
 import com.claudeborne.camera.capture.PhotoRules
 import com.claudeborne.camera.capture.StillFormat
+import android.hardware.camera2.params.MeteringRectangle
+import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
 import java.util.concurrent.TimeUnit
@@ -50,15 +53,19 @@ class CameraEngine(context: Context) {
     class Info(
         val facing: Facing, val sensorOrientation: Int, val previewWidth: Int, val previewHeight: Int,
         val zoomMin: Float, val zoomMax: Float, val hasFlash: Boolean, val format: StillFormat,
+        val activeWidth: Int, val activeHeight: Int, val evStep: Float, val evMinIndex: Int, val evMaxIndex: Int,
     )
+
+    /** What the focus is doing right now, for the colour of the focus box. */
+    enum class Focus { IDLE, SEARCHING, FOCUSED, FAILED }
 
     /** The user's format choices when the camera opens; the engine picks what this camera can really do. */
     class StillPrefs(val heif: Boolean, val ultraHdr: Boolean, val mirrorSelfie: Boolean)
 
     /** One photo to take. */
-    class Shot(val flash: Flash, val jpegOrientation: Int, val location: Location?)
+    class Shot(val flash: Flash, val jpegOrientation: Int, val location: Location?, val squareCrop: Boolean = false)
 
-    class Photo(val bytes: ByteArray, val format: StillFormat, val jpegOrientation: Int, val mirrored: Boolean)
+    class Photo(val bytes: ByteArray, val format: StillFormat, val jpegOrientation: Int, val mirrored: Boolean, val squareCrop: Boolean)
 
     /** Called on the camera thread. */
     interface Listener {
@@ -73,6 +80,11 @@ class CameraEngine(context: Context) {
         private set
     /** A photo is being taken (the shutter ignores taps until it is done). */
     var capturing by mutableStateOf(false)
+        private set
+    var focus by mutableStateOf(Focus.IDLE)
+        private set
+    /** Focus and exposure are held where the user long-pressed. */
+    var locked by mutableStateOf(false)
         private set
     @Volatile var listener: Listener? = null
 
@@ -100,6 +112,12 @@ class CameraEngine(context: Context) {
     private var format = StillFormat.JPEG
     @Volatile private var zoom = 1f
     @Volatile private var flash = Flash.OFF
+    @Volatile private var evStops = 0f
+    private var focusRect: MeteringRectangle? = null
+    private var afRegions = false
+    private var aeRegions = false
+    private var focusToken = 0
+    private var done: CompletableDeferred<Unit>? = null
 
     private enum class Phase { NONE, PRECAPTURE, WAIT_DONE }
     private var phase = Phase.NONE
@@ -148,9 +166,84 @@ class CameraEngine(context: Context) {
         handler.post { applyRequest() }
     }
 
-    /** Takes one photo: for flash auto/on the camera first measures the light (a short pre-flash), then captures. */
-    fun takePhoto(shot: Shot) {
-        handler.post { begin(shot) }
+    /** Exposure compensation in stops (EV); the camera rounds it to its own step. */
+    fun setExposure(stops: Float) {
+        evStops = stops
+        handler.post { applyRequest() }
+    }
+
+    /**
+     * Focuses and meters at a point of the upright picture ([x] from the left, [yUp] from the bottom, both 0..1). With [lock]
+     * the focus and exposure then stay put until [clearFocus]; without it the camera goes back to following the scene after a moment.
+     */
+    fun focusAt(x: Float, yUp: Float, lock: Boolean) {
+        handler.post {
+            val i = info ?: return@post
+            val r = Metering.region(x, yUp, i.sensorOrientation, i.activeWidth, i.activeHeight, zoom)
+            focusRect = MeteringRectangle(r[0], r[1], r[2], r[3], MeteringRectangle.METERING_WEIGHT_MAX - 1)
+            locked = lock
+            applyRequest()
+            triggerFocus()
+            val token = ++focusToken
+            if (!lock) handler.postDelayed({ if (token == focusToken && !locked) releaseFocus() }, 3000)
+        }
+    }
+
+    /** Back to following the scene by itself. */
+    fun clearFocus() {
+        handler.post {
+            focusRect = null
+            locked = false
+            focusToken++
+            applyRequest()
+            releaseFocus()
+        }
+    }
+
+    /**
+     * Takes one photo and returns once it has arrived (or failed), so a burst can take the next one. For flash auto/on the camera
+     * first measures the light (a short pre-flash).
+     */
+    suspend fun takePhotoAndWait(shot: Shot) {
+        val finished = CompletableDeferred<Unit>()
+        handler.post {
+            if (pending != null || reader == null) finished.complete(Unit) else { done = finished; begin(shot) }
+        }
+        finished.await()
+    }
+
+    private fun triggerFocus() {
+        val r = request ?: return
+        val s = session ?: return
+        try {
+            r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_START)
+            s.capture(r.build(), previewCallback, handler)
+            r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+        } catch (_: Exception) { }
+    }
+
+    private fun releaseFocus() {
+        val r = request ?: return
+        val s = session ?: return
+        try {
+            focusRect = null
+            r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_CANCEL)
+            s.capture(r.build(), previewCallback, handler)
+            r.set(CaptureRequest.CONTROL_AF_TRIGGER, CaptureRequest.CONTROL_AF_TRIGGER_IDLE)
+            applyRequest()
+        } catch (_: Exception) { }
+    }
+
+    /** The settings a preview frame and a photo share. */
+    private fun common(b: CaptureRequest.Builder) {
+        val i = info ?: return
+        b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(i.zoomMin, i.zoomMax))
+        b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Ev.toIndex(evStops, i.evStep, i.evMinIndex, i.evMaxIndex))
+        b.set(CaptureRequest.CONTROL_AE_LOCK, locked)
+        b.set(CaptureRequest.CONTROL_AF_MODE, if (locked) CaptureRequest.CONTROL_AF_MODE_AUTO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        val rect = focusRect?.let { arrayOf(it) }
+        if (afRegions) b.set(CaptureRequest.CONTROL_AF_REGIONS, rect)
+        if (aeRegions) b.set(CaptureRequest.CONTROL_AE_REGIONS, rect)
     }
 
     private fun start() {
@@ -174,8 +267,17 @@ class CameraEngine(context: Context) {
             val (sw, sh) = PhotoRules.chooseStillSize(stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
             reader = ImageReader.newInstance(sw, sh, imageFormat(format), 2).also { it.setOnImageAvailableListener(::onImage, handler) }
 
+            afRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0
+            aeRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0
+            val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)!!
+            val evRange = chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE)
             cameraId = id
-            info = Info(wantFacing, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, w, h, zoomRange?.lower ?: 1f, zoomRange?.upper ?: 1f, hasFlash, format)
+            focusRect = null
+            locked = false
+            info = Info(
+                wantFacing, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, w, h, zoomRange?.lower ?: 1f, zoomRange?.upper ?: 1f, hasFlash, format,
+                active.width(), active.height(), chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f, evRange?.lower ?: 0, evRange?.upper ?: 0,
+            )
             texture.setDefaultBufferSize(w, h)
             surface = Surface(texture)
             state = State.Opening
@@ -249,8 +351,7 @@ class CameraEngine(context: Context) {
     private fun applyRequest() {
         val r = request ?: return
         val s = session ?: return
-        val range = info ?: return
-        r.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(range.zoomMin, range.zoomMax))
+        common(r)
         r.set(CaptureRequest.CONTROL_AE_MODE, aeMode(flash))
         r.set(CaptureRequest.FLASH_MODE, if (flash == Flash.TORCH && hasFlash) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
         try {
@@ -270,9 +371,13 @@ class CameraEngine(context: Context) {
     // ---- photos ----
 
     private fun begin(shot: Shot) {
-        val r = request ?: return
-        val s = session ?: return
-        if (reader == null || pending != null) return
+        val r = request
+        val s = session
+        if (r == null || s == null || reader == null || pending != null) {
+            done?.complete(Unit) // nothing to wait for
+            done = null
+            return
+        }
         pending = shot
         capturing = true
         val token = ++shotToken
@@ -295,6 +400,13 @@ class CameraEngine(context: Context) {
     /** Watches the preview frames: while a flash photo waits for the metering to finish, this decides when to shoot. */
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            val seen = when (result.get(CaptureResult.CONTROL_AF_STATE)) {
+                CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN, CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN -> Focus.SEARCHING
+                CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED, CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED -> Focus.FOCUSED
+                CaptureResult.CONTROL_AF_STATE_NOT_FOCUSED_LOCKED, CaptureResult.CONTROL_AF_STATE_PASSIVE_UNFOCUSED -> Focus.FAILED
+                else -> Focus.IDLE
+            }
+            if (seen != focus) focus = seen
             if (pending == null || phase == Phase.NONE) return
             val ae = result.get(CaptureResult.CONTROL_AE_STATE)
             if (SystemClock.uptimeMillis() > deadline) return captureStill()
@@ -319,10 +431,9 @@ class CameraEngine(context: Context) {
         try {
             val b = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
                 addTarget(out.surface)
-                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                common(this)
                 set(CaptureRequest.CONTROL_AE_MODE, aeMode(shot.flash))
                 set(CaptureRequest.FLASH_MODE, if (shot.flash == Flash.TORCH && hasFlash) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
-                set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(info?.zoomMin ?: 1f, info?.zoomMax ?: 1f))
                 set(CaptureRequest.JPEG_ORIENTATION, shot.jpegOrientation)
                 set(CaptureRequest.JPEG_QUALITY, 95.toByte())
                 if (qualityNoise) set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
@@ -349,7 +460,7 @@ class CameraEngine(context: Context) {
         try {
             val buffer = image.planes[0].buffer
             val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-            if (shot != null) listener?.onPhoto(Photo(bytes, format, shot.jpegOrientation, mirrored = wantFacing == Facing.FRONT && wantPrefs.mirrorSelfie && format == StillFormat.JPEG))
+            if (shot != null) listener?.onPhoto(Photo(bytes, format, shot.jpegOrientation, mirrored = wantFacing == Facing.FRONT && wantPrefs.mirrorSelfie && format == StillFormat.JPEG, squareCrop = shot.squareCrop))
         } finally {
             image.close()
         }
@@ -361,6 +472,8 @@ class CameraEngine(context: Context) {
         phase = Phase.NONE
         capturing = false
         if (error != null) listener?.onFailed(error)
+        done?.complete(Unit)
+        done = null
     }
 
     private fun imageFormat(f: StillFormat) = when (f) {
@@ -395,6 +508,9 @@ class CameraEngine(context: Context) {
         pending = null
         phase = Phase.NONE
         capturing = false
+        done?.complete(Unit)
+        done = null
+        focus = Focus.IDLE
         try { manager.unregisterAvailabilityCallback(availability) } catch (_: Exception) { }
         try { session?.close() } catch (_: Exception) { }
         try { device?.close() } catch (_: Exception) { }

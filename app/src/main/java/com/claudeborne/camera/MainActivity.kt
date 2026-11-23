@@ -5,10 +5,20 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import com.claudeborne.camera.data.Updater
+import com.claudeborne.camera.ui.CameraKeys
 import com.claudeborne.camera.ui.ClaudeBorneTheme
 import com.claudeborne.camera.ui.Root
 
 class MainActivity : ComponentActivity() {
+    // the viewfinder can take the volume keys (shutter or zoom, per the setting)
+    private fun isVolume(key: Int) = key == android.view.KeyEvent.KEYCODE_VOLUME_UP || key == android.view.KeyEvent.KEYCODE_VOLUME_DOWN
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent): Boolean =
+        isVolume(keyCode) && CameraKeys.handles() && CameraKeys.handler?.invoke(keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP, event.repeatCount == 0) == true ||
+            super.onKeyDown(keyCode, event)
+
+    override fun onKeyUp(keyCode: Int, event: android.view.KeyEvent): Boolean = isVolume(keyCode) && CameraKeys.handles() || super.onKeyUp(keyCode, event)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()

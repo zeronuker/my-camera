@@ -25,6 +25,10 @@ class PreviewRenderer(
     @Volatile var mirror = false
     @Volatile var bufferWidth = 1920
     @Volatile var bufferHeight = 1440
+    /** The band of the screen the picture fills, in pixels from the top; a height of 0 means the whole screen. */
+    @Volatile var boxTop = 0
+    @Volatile var boxHeight = 0
+    private var holdShare = 1f
 
     private val newFrame = AtomicBoolean(false)
     @Volatile private var freezeRequested = false
@@ -102,20 +106,25 @@ class PreviewRenderer(
             st.getTransformMatrix(transform)
             hasFrame = true
         }
+        val boxH = if (boxHeight in 1 until viewH) boxHeight else viewH // the picture is drawn only inside this band of the screen
         if (freezeRequested) {
             freezeRequested = false
             if (hasFrame) {
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, holdFbo)
-                drawLive()
+                GLES20.glViewport(0, 0, viewW, boxH)
+                drawLive(boxH)
                 GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+                holdShare = boxH.toFloat() / viewH
                 holding = true
                 fadeStartNs = 0L
             }
         }
+        GLES20.glViewport(0, 0, viewW, viewH)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        GLES20.glViewport(0, (viewH - boxTop - boxH).coerceAtLeast(0), viewW, boxH)
         if (!holding) {
-            if (hasFrame) drawLive()
+            if (hasFrame) drawLive(boxH)
             return
         }
         if (armed && gotFrame && fadeStartNs == 0L) fadeStartNs = System.nanoTime()
@@ -126,21 +135,21 @@ class PreviewRenderer(
         val t = (System.nanoTime() - fadeStartNs) / (FADE_MS * 1_000_000f)
         if (t >= 1f) {
             holding = false
-            drawLive()
+            drawLive(boxH)
             return
         }
-        drawLive()
+        drawLive(boxH)
         drawHeld(1f - t)
         requestRender() // keep drawing while the fade runs
     }
 
-    private fun drawLive() {
+    private fun drawLive(boxH: Int) {
         GLES20.glUseProgram(oesProgram)
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(oesProgram, "uTex"), 0)
         GLES20.glUniformMatrix3fv(GLES20.glGetUniformLocation(oesProgram, "uM"), 1, false,
-            PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, viewH), 0)
+            PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH), 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(oesProgram, "uSt"), 1, false, transform, 0)
         drawQuad(oesProgram)
     }
@@ -153,6 +162,7 @@ class PreviewRenderer(
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, holdTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(plainProgram, "uTex"), 0)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(plainProgram, "uAlpha"), alpha)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(plainProgram, "uShare"), holdShare)
         drawQuad(plainProgram)
         GLES20.glDisable(GLES20.GL_BLEND)
     }
@@ -201,7 +211,8 @@ class PreviewRenderer(
             varying vec2 vUv;
             uniform sampler2D uTex;
             uniform float uAlpha;
-            void main() { gl_FragColor = vec4(texture2D(uTex, vUv).rgb, uAlpha); }
+            uniform float uShare;
+            void main() { gl_FragColor = vec4(texture2D(uTex, vec2(vUv.x, vUv.y * uShare)).rgb, uAlpha); }
         """
     }
 }

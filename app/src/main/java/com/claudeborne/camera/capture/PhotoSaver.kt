@@ -3,6 +3,7 @@ package com.claudeborne.camera.capture
 import android.content.ContentValues
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.media.ExifInterface
 import android.net.Uri
 import android.os.Environment
@@ -39,11 +40,11 @@ object PhotoSaver {
     }
 
     /** [exifOrientation] is written into the file only for mirrored selfies (everything else the camera tags itself). */
-    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, timeMs: Long, done: (Result<Uri>) -> Unit) {
+    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, done: (Result<Uri>) -> Unit) {
         val app = context.applicationContext
         saving++
         io.execute {
-            val result = runCatching { write(app, bytes, format, exifOrientation, timeMs) }
+            val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs) }
             main.post {
                 saving--
                 done(result)
@@ -51,8 +52,14 @@ object PhotoSaver {
         }
     }
 
-    private fun write(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, timeMs: Long): Uri {
-        val data = if (exifOrientation == null) bytes else withOrientation(context, bytes, exifOrientation)
+    private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long): Uri {
+        // the 1:1 shape is cut out of the 4:3 photo; that makes a plain JPEG (an Ultra HDR file loses its gain map when re-encoded)
+        val format = if (squareCrop) StillFormat.JPEG else wanted
+        val data = when {
+            squareCrop -> squared(context, bytes, exifOrientation)
+            exifOrientation != null -> withOrientation(context, bytes, exifOrientation)
+            else -> bytes
+        }
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, PhotoRules.fileName(timeMs, format.extension))
@@ -83,6 +90,36 @@ object PhotoSaver {
             return file.readBytes()
         } finally {
             file.delete()
+        }
+    }
+
+    /** The centre square of the photo, re-encoded; the tags that matter (turn, time, place, camera) are copied over. */
+    private fun squared(context: Context, bytes: ByteArray, orientation: Int?): ByteArray {
+        val dir = File(context.cacheDir, "share").apply { mkdirs() }
+        val source = dir.resolve("square-in.jpg")
+        val target = dir.resolve("square-out.jpg")
+        try {
+            source.writeBytes(bytes)
+            val picture = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw java.io.IOException("could not read the photo")
+            val (left, top, side) = AspectMath.squareCrop(picture.width, picture.height)
+            val cut = Bitmap.createBitmap(picture, left, top, side, side)
+            target.outputStream().use { cut.compress(Bitmap.CompressFormat.JPEG, 97, it) }
+            val from = ExifInterface(source.path)
+            ExifInterface(target.path).apply {
+                val kept = listOf(
+                    ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL, ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL,
+                    ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF, ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
+                    ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF, ExifInterface.TAG_GPS_DATESTAMP, ExifInterface.TAG_GPS_TIMESTAMP,
+                    ExifInterface.TAG_GPS_PROCESSING_METHOD,
+                )
+                for (tag in kept) from.getAttribute(tag)?.let { setAttribute(tag, it) }
+                setAttribute(ExifInterface.TAG_ORIENTATION, (orientation ?: from.getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)).toString())
+                saveAttributes()
+            }
+            return target.readBytes()
+        } finally {
+            source.delete()
+            target.delete()
         }
     }
 
