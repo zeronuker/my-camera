@@ -105,6 +105,9 @@ import com.claudeborne.camera.scan.Enhance
 import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
+import com.claudeborne.camera.video.ClipRing
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
 import com.claudeborne.camera.proc.FrameStack
 import com.claudeborne.camera.proc.HdrMerge
 import com.claudeborne.camera.proc.Panorama
@@ -209,6 +212,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
     val scanner = remember { FrameScanner(context.applicationContext) }
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
+    var ring by remember { mutableStateOf<ClipRing?>(null) } // Live photo: the clip encoder that runs while it is on
+    var liveClip by remember { mutableStateOf<Deferred<ByteArray?>?>(null) } // the clip for the photo being taken
     var busyText by remember { mutableStateOf("READING TEXT") }
     var finishFlag by remember { mutableStateOf(false) } // second tap in Pano / Long exposure: stop taking pictures and finish
     var sweepProgress by remember { mutableStateOf<Float?>(null) }
@@ -347,6 +352,20 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val nightOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_NIGHT) && !engine.extRefused
     val extWanted = if (nightOk && !isVideo && !wantRaw && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways))) CameraExtensionCharacteristics.EXTENSION_NIGHT else -1
     LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
+    // Live photo: while on (Photo, rear camera), the GL pipeline feeds a small encoder that remembers the last moments
+    val liveOn = mode == Mode.PHOTO && AppSettings.livePhoto && facing == Facing.BACK && extWanted < 0 && !launch.returnsResult
+    DisposableEffect(liveOn, resumed) {
+        var r: ClipRing? = null
+        if (liveOn && resumed) {
+            r = runCatching { ClipRing(960, 1280) }.getOrNull()
+            val made = r
+            if (made != null) {
+                renderer.startEncoding(PreviewRenderer.Encoding(made.surface, 960, 1280, 0, false, false, { ts -> ts })) { ok -> if (!ok) say("Live photo could not start") }
+                ring = made
+            } else say("Live photo is not available here")
+        }
+        onDispose { val old = r; if (old != null) { ring = null; renderer.stopEncoding { old.release() } } }
+    }
     val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
         Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
@@ -378,13 +397,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         )
     } else null
     LaunchedEffect(caps, isVideo, picked == null) { if (isVideo && caps != null && picked == null) say("This camera cannot record video") }
-    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw, extWanted) {
+    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw, extWanted, liveOn) {
         val st = texture
         val view = glView
         if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null)) {
             // camera sizes are listed landscape, so the screen shape is its long side over its short side (about 2.2 on this phone)
             renderer.freeze() // every reopen (mode, quality, camera, HDR) keeps the last picture until the new one streams
-            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie, raw = wantRaw), setup, extWanted)
+            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif && !liveOn, AppSettings.ultraHdr && !liveOn, AppSettings.mirrorSelfie, raw = wantRaw), setup, extWanted)
         }
     }
     // Pro: the manual choices go to the camera; the assistants go to the picture (screen only, never into a photo or video)
@@ -499,14 +518,18 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 val exif = if (photo.mirrored) PhotoRules.exifOrientation(photo.jpegOrientation, mirrored = true) else null
                 val mark = if (photo.format == StillFormat.DNG) null else watermarkNow(false)
                 val edit = if (photo.format == StillFormat.DNG || (lookNow.isIdentity && mark == null)) null else PhotoEdit(lookNow, mark?.let { m -> { c, w, h -> Watermark.draw(c, w, h, m) } })
-                PhotoSaver.save(context, photo.bytes, photo.format, exif, photo.squareCrop, System.currentTimeMillis(), edit) { result ->
+                val clip = liveClip.also { liveClip = null }
+                val saveWith = { mp4: ByteArray? ->
+                  PhotoSaver.save(context, photo.bytes, photo.format, exif, photo.squareCrop, System.currentTimeMillis(), edit, mp4) { result ->
                     result.onSuccess { uri ->
                         AppSettings.rememberLastPhoto(uri.toString())
                         if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
                         scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
                         if (launchNow.returnsResult) onResultNow(uri) // another app asked for this one photo
                     }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
+                  }
                 }
+                if (clip != null) scope.launch { saveWith(runCatching { clip.await() }.getOrNull()) } else saveWith(null)
             }
 
             override fun onFailed(message: String) {
@@ -654,6 +677,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         val place = if (AppSettings.locationTags) LastLocation.get(context) else null
         // read the mode and format as they are now: a photo run started from an older composition must not shoot an old choice
         val format = if (mode.isMaster) MasterFormat.of(AppSettings.masterFormat) else MasterFormat.JPG
+        val live = ring
+        liveClip = if (live != null && format == MasterFormat.JPG && !front) scope.async(Dispatchers.Default) { delay(1500); live.mp4(java.io.File(context.cacheDir, "share").apply { mkdirs() }) } else null
         engine.takePhotoAndWait(CameraEngine.Shot(flashMode, PhotoRules.jpegOrientation(i.sensorOrientation, deviceDegrees, front), place, squareCrop = aspect == Aspect.R1_1, format = format))
         screenFlash = false
         return true
@@ -1321,6 +1346,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
                         showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode.oneShot,
+                        showLive = mode == Mode.PHOTO && !front && !launch.secure, live = AppSettings.livePhoto, onLive = { AppSettings.livePhoto = !AppSettings.livePhoto; menu = Menu.NONE; say("Live photo: ${if (AppSettings.livePhoto) "On" else "Off"}") },
                         showAutoHdr = mode == Mode.PHOTO && !front && DocScanner.available, autoHdr = AppSettings.autoHdr, onAutoHdr = { AppSettings.autoHdr = !AppSettings.autoHdr; menu = Menu.NONE; say("Auto HDR: ${if (AppSettings.autoHdr) "On" else "Off"}") },
                         showAction = mode == Mode.PHOTO && info?.actionOk == true, action = action, onAction = { action = !action; menu = Menu.NONE; say("Action mode: ${if (action) "On" else "Off"}") },
                         showMacro = mode == Mode.PHOTO && closeUp, macro = macro, onMacro = { menu = Menu.NONE; if (macro) leaveMacro() else enterMacro() },

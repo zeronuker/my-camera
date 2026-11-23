@@ -49,11 +49,11 @@ object PhotoSaver {
      * [exifOrientation] is written into the file only for mirrored selfies (everything else the camera tags itself). [edit] is a look
      * and/or a watermark to burn into the picture: the file is then a plain JPEG (an Ultra HDR gain map or HEIF cannot survive that).
      */
-    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit? = null, done: (Result<Uri>) -> Unit) {
+    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit? = null, motion: ByteArray? = null, done: (Result<Uri>) -> Unit) {
         val app = context.applicationContext
         saving++
         io.execute {
-            val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs, edit) }
+            val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs, edit, motion) }
             main.post {
                 saving--
                 done(result)
@@ -61,19 +61,21 @@ object PhotoSaver {
         }
     }
 
-    private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit?): Uri {
+    private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit?, motion: ByteArray?): Uri {
         // the 1:1 shape is cut out of the 4:3 photo; that makes a plain JPEG (an Ultra HDR file loses its gain map when re-encoded)
         val raw = wanted == StillFormat.DNG // a DNG is written as it is: no crop, the turn is already inside it
         // a look or watermark: the same effect shader as the viewfinder, on the finished photo; null (any problem) keeps the camera's own file
         val edited = if (!raw && edit != null) edited(context, bytes, exifOrientation, squareCrop, edit) else null
         val format = if ((squareCrop || edited != null) && !raw) StillFormat.JPEG else wanted
-        val data = when {
+        val still = when {
             raw -> bytes
             edited != null -> edited
             squareCrop -> squared(context, bytes, exifOrientation)
             exifOrientation != null -> withOrientation(context, bytes, exifOrientation)
             else -> bytes
         }
+        // a Live photo: the clip goes after the finished picture (anything that re-encodes the JPEG has already happened)
+        val data = if (motion != null && format == StillFormat.JPEG) MotionPhoto.build(still, motion, 1_500_000) else still
         val resolver = context.contentResolver
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, PhotoRules.fileName(timeMs, format.extension))

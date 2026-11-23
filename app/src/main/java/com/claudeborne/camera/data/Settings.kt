@@ -62,6 +62,7 @@ object Settings {
     var qrScan by Pref("qrScan", true) // look for QR codes in Photo mode
     var recommendText by Pref("recommendText", true) // suggest Text mode when text fills the frame
     var nightAlways by Pref("nightAlways", false) // test: the Night extension for every photo, to compare with the plain camera in daylight
+    var livePhoto by Pref("livePhoto", false) // Photo, rear camera: a short clip from just before and after the shutter is saved inside the photo
     var autoHdr by Pref("autoHdr", false) // Photo: three exposures fused (rear camera)
     var lexpSec by Pref("lexpSec", 5) // Long exposure: seconds of frames to stack
     var lexpTrails by Pref("lexpTrails", false) // Long exposure: false smooth (average), true light trails (brightest)
