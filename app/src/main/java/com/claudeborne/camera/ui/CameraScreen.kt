@@ -173,7 +173,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     var focusHeld by remember { mutableStateOf(false) }
     var qualityOpen by remember { mutableStateOf(false) }
     var micAsk by remember { mutableStateOf<Boolean?>(null) } // null: closed, false: ask, true: Android no longer asks (settings)
-    val leaveHooks = remember { arrayOf<() -> Unit>({}, {}) } // 0: finish a recording when the screen goes; 1: start one once the microphone is allowed
+    val leaveHooks = remember { arrayOf<() -> Unit>({}) } // 0: finish a recording when the screen goes
     fun say(text: String) { toast = text to ((toast?.second ?: 0) + 1) }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -182,7 +182,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     }
     LaunchedEffect(Unit) { if (!permitted) askCamera.launch(Manifest.permission.CAMERA) }
     val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
-        if (ok) { micAsk = null; leaveHooks[1]() } else {
+        if (ok) { micAsk = null; say("Microphone allowed. Tap record.") } else { // the camera was closed while the question was open, so the screen waits for a new tap
             val a = context as? Activity
             micAsk = a != null && !a.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) // true: Android will not ask again
         }
@@ -505,7 +505,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                     savingVideo = false
                     recorder = null
                     recOption = null
-                    say(if (direct) "High-speed video did not start. Try a lower frame rate." else "The video encoder could not start")
+                    say(if (direct) "High-speed video did not start. Try a lower frame rate." else if (s.hdr != null) "10-bit HDR could not start. Turn it off in the video menu." else "The video encoder could not start")
                 }
             }
             if (direct) {
@@ -516,7 +516,6 @@ fun CameraScreen(onSettings: () -> Unit) {
             }
         }
     }
-    leaveHooks[1] = { beginRecording() }
 
     /** Record button: asks for the microphone first when the video has sound, then starts or stops the recording. */
     fun recordTap() {

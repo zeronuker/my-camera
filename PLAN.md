@@ -162,6 +162,14 @@ Done when: every control above works on the phone; photos land in `DCIM/Camera` 
 
 Done when: each resolution/fps the probe allowed records, plays in the gallery manager, and has sound.
 
+**Built in Phase 2 (facts learned, details in the hand-over note):**
+- Normal video (up to 4K60) goes camera → GL texture → screen and encoder surface (second EGL surface in the same share group, one frame event per camera frame). A photo while recording is one picture read back from the same GL frame (video resolution, plain JPEG); it is hidden in 10-bit HDR.
+- 120 and 240 fps cannot go through the GL texture: a constrained high-speed session only delivers every frame to a *recording* surface, a preview surface gets about 30 fps. So while recording at 120/240 the camera is switched to a high-speed session that writes straight into the encoder (the screen keeps a slower GL preview) and the file is turned by an orientation hint. Slo-mo files are stretched to play at 30 fps (120 fps = 4x slower, 240 = 8x), without sound.
+- **HDR10+ is NO**: HDR10+ needs per-frame dynamic metadata, which the GL redraw cannot carry. 10-bit offers HLG10 and HDR10 (HEVC Main10). The on-screen preview of 10-bit is not tone-mapped.
+- Time-lapse speeds 10x / 30x / 60x / 120x / 300x, one kept frame every speed/30 s, played at 30 fps, no sound. SLO-MO is hidden on a camera without high-speed sizes.
+- The mode strip is VIDEO · PHOTO · SLO-MO · TIME-LAPSE until the More grid exists (Phase 10 reorders).
+- Dolby Vision: the probe only listed AVC/HEVC encoders, so it could not answer; Diagnostics now also lists `dolbyVisionEncoders` (re-run it on the phone). Not offered.
+
 ### Phase 3 — system integration and gallery handoff
 
 - Default-camera intents: `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `VIDEO_CAMERA` (power double-press, if OxygenOS honours a third-party default — PROBE).
@@ -299,7 +307,7 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [x] | Ultra HDR JPEG (JPEG_R) photos | OK | 1 |
 | [ ] | Video 720p / 1080p / 2K / 4K × 30/60 all lenses; 4K120 main only; 1080p120 all rear | OK | 2 |
 | [ ] | 8K video | NO (camera outputs max 4096x3072 to apps) | — |
-| [ ] | 10-bit HDR video HLG10 / HDR10 / HDR10+ | OK | 2 |
+| [ ] | 10-bit HDR video HLG10 / HDR10 (HDR10+ is NO: needs per-frame metadata the GL redraw cannot carry) | OK | 2 |
 | [ ] | Ultra Steady / stabilisation (Android PREVIEW_STABILIZATION) | OK | 2 |
 | [ ] | Focus lock, lock lens, lock WB, bitrate, adaptive fps, HEVC | OK | 2 |
 | [ ] | Photo while recording (still / motion) | OK | 2 |
