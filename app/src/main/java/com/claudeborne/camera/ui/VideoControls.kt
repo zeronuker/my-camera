@@ -66,6 +66,7 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     MASTER("MASTER", null),
     VIDEO("VIDEO", VideoStyle.NORMAL),
     PHOTO("PHOTO", null),
+    TEXT("TEXT", null),
     SLOMO("SLO-MO", VideoStyle.SLOMO),
     TIMELAPSE("TIME-LAPSE", VideoStyle.TIMELAPSE),
     PROVIDEO("PRO VIDEO", VideoStyle.NORMAL),

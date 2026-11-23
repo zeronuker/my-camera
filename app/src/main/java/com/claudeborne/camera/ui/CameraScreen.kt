@@ -99,6 +99,11 @@ import com.claudeborne.camera.capture.PhotoRules
 import com.claudeborne.camera.capture.PhotoSaver
 import com.claudeborne.camera.data.Settings as AppSettings
 import com.claudeborne.camera.gl.PreviewMath
+import com.claudeborne.camera.scan.Frac
+import com.claudeborne.camera.scan.FrameScanner
+import com.claudeborne.camera.scan.QrRules
+import com.claudeborne.camera.scan.TextRules
+import androidx.activity.compose.BackHandler
 import com.claudeborne.camera.gl.PreviewRenderer
 import com.claudeborne.camera.capture.StillFormat
 import com.claudeborne.camera.video.Encoders
@@ -190,6 +195,14 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var proOpen by remember { mutableStateOf<ProParam?>(null) }
     var formatOpen by remember { mutableStateOf(false) }
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
+    val scanner = remember { FrameScanner() }
+    var qr by remember { mutableStateOf<String?>(null) } // the last QR code seen; it goes away when it has not been seen for a while or is dismissed
+    var qrSeenAt by remember { mutableLongStateOf(0L) }
+    var textOutline by remember { mutableStateOf<Frac?>(null) }
+    var suggestText by remember { mutableStateOf(false) }
+    var readingText by remember { mutableStateOf(false) }
+    var textResult by remember { mutableStateOf<String?>(null) }
+    val textModeNow by rememberUpdatedState(mode == Mode.TEXT) // read inside the camera listener, which lives longer than this composition
     var roll by remember { mutableFloatStateOf(0f) }
     var micLevel by remember { mutableFloatStateOf(0f) }
     val masterFormat = MasterFormat.of(AppSettings.masterFormat)
@@ -266,6 +279,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             engine.listener = null
             engine.release()
             sound.release()
+            scanner.close()
         }
     }
     // the phone's heat: warn, stop bursts when hot, refuse photos when much too hot
@@ -315,7 +329,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
     }
     // the look: filter, Soft light and styles (Master), scenes (Video), Underwater and Tilt-shift; 120 and 240 fps video bypasses the GL pipeline, so it gets none
-    val lookFilterOk = !isMaster && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
+    val lookFilterOk = !isMaster && mode != Mode.TEXT && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
     val look = if (isVideo && picked?.highSpeed == true) Look.NONE else Look(
         filter = if (lookFilterOk) AppSettings.filter.coerceIn(0, com.claudeborne.camera.look.Filters.all.lastIndex) else 0,
         soft = if (mode == Mode.PHOTO || isMaster) AppSettings.softLight else 0,
@@ -361,6 +375,26 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         renderer.histogram = if (histogramOn) { bins -> histogramBins = bins } else null
         onDispose { renderer.histogram = null }
     }
+    // QR codes (Photo) and text (Text mode outline, Photo suggestion): small copies of the live picture go to the scanner, never to a file
+    val scanQr = mode == Mode.PHOTO && AppSettings.qrScan
+    val scanText = (mode == Mode.TEXT && textResult == null && !readingText) || (mode == Mode.PHOTO && AppSettings.recommendText)
+    DisposableEffect(scanQr, scanText, mode) {
+        val inText = mode == Mode.TEXT
+        var pass = 0
+        renderer.analysisEveryMs = if (inText) 500L else 450L
+        renderer.analysis = if (scanQr || scanText) { rgba, w, h ->
+            val wantText = scanText && (inText || pass++ % 3 == 0) // in Photo, text is only looked for now and then
+            scanner.look(rgba, w, h, scanQr, wantText) { hit ->
+                if (hit.qr != null) { qr = hit.qr; qrSeenAt = android.os.SystemClock.elapsedRealtime() }
+                if (wantText) { if (inText) textOutline = TextRules.outline(hit.lines, hit.chars) else suggestText = TextRules.recommend(hit.lines, hit.chars) }
+            }
+            Unit
+        } else null
+        onDispose { renderer.analysis = null }
+    }
+    LaunchedEffect(mode) { qr = null; textOutline = null; suggestText = false }
+    LaunchedEffect(qr) { while (qr != null) { delay(500); if (android.os.SystemClock.elapsedRealtime() - qrSeenAt > 6000) qr = null } }
+    BackHandler(textResult != null) { textResult = null }
     // the level line: the phone's gravity, only while the line is on show
     val levelOn = (proMode && AppSettings.levelLine) || AppSettings.composeLevel
     DisposableEffect(levelOn, resumed) {
@@ -404,6 +438,14 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
 
             override fun onPhoto(photo: CameraEngine.Photo) {
                 screenFlash = false
+                if (textModeNow) { // Text mode keeps no photo: it reads the words and opens the editor
+                    readingText = true
+                    scope.launch(Dispatchers.IO) {
+                        val text = scanner.readPhoto(photo.bytes, photo.jpegOrientation)
+                        withContext(Dispatchers.Main) { readingText = false; if (text.isBlank()) say("No text found") else textResult = text }
+                    }
+                    return
+                }
                 val exif = if (photo.mirrored) PhotoRules.exifOrientation(photo.jpegOrientation, mirrored = true) else null
                 val mark = if (photo.format == StillFormat.DNG) null else watermarkNow(false)
                 val edit = if (photo.format == StillFormat.DNG || (lookNow.isIdentity && mark == null)) null else PhotoEdit(lookNow, mark?.let { m -> { c, w, h -> Watermark.draw(c, w, h, m) } })
@@ -734,20 +776,22 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         menu = Menu.NONE
         evOpen = false
         if (runJob != null) { runJob?.cancel(); say("Stopped"); return }
-        if (engine.state != CameraEngine.State.Streaming || engine.capturing) return
+        if (engine.state != CameraEngine.State.Streaming || engine.capturing || readingText) return
         if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
+        val timerNow = if (mode == Mode.TEXT) 0 else timerSec // Text mode takes one picture at once
+        val intervalNow = if (mode == Mode.TEXT) 0 else intervalSec
         runJob = scope.launch {
             try {
-                if (timerSec > 0) {
-                    for (s in timerSec downTo 1) { countdown = s; delay(1000) }
+                if (timerNow > 0) {
+                    for (s in timerNow downTo 1) { countdown = s; delay(1000) }
                     countdown = null
                 }
-                if (intervalSec > 0) {
+                if (intervalNow > 0) {
                     var n = 0
                     while (isActive) {
                         if (!captureOnce(useFlash = true)) break
                         runCount = ++n
-                        delay(intervalSec * 1000L)
+                        delay(intervalNow * 1000L)
                     }
                 } else {
                     captureOnce(useFlash = true)
@@ -760,7 +804,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
     fun holdStart() {
-        if (mode.isVideo || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
+        if (mode.isVideo || mode == Mode.TEXT || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
         if (heat != Heat.OK) return say("No burst while the phone is hot")
         menu = Menu.NONE
         bursting = true
@@ -850,6 +894,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 androidx.compose.animation.AnimatedVisibility(grid != GridKind.NONE, enter = androidx.compose.animation.fadeIn(tween(MOTION_MS)), exit = androidx.compose.animation.fadeOut(tween(MOTION_FAST_MS))) {
                     GridOverlay(if (grid == GridKind.NONE) GridKind.GRID else grid, Modifier.fillMaxSize())
                 }
+                androidx.compose.animation.AnimatedVisibility(mode == Mode.TEXT && textResult == null, enter = androidx.compose.animation.fadeIn(tween(MOTION_MS)), exit = androidx.compose.animation.fadeOut(tween(MOTION_FAST_MS))) {
+                    TextOutline(textOutline, front, Modifier.fillMaxSize())
+                }
                 androidx.compose.animation.AnimatedVisibility(mode == Mode.TILTSHIFT, enter = androidx.compose.animation.fadeIn(tween(MOTION_MS)), exit = androidx.compose.animation.fadeOut(tween(MOTION_FAST_MS))) {
                     TiltBand(tilt, Modifier.fillMaxSize())
                 }
@@ -904,6 +951,20 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     QualityPanel(rows)
                 }
                 Box(Modifier.align(Alignment.Center)) { Countdown(countdown) }
+                Box(Modifier.align(Alignment.TopCenter).padding(top = 124.dp, start = 16.dp, end = 16.dp)) {
+                    AnimatedOverlay(qr?.takeIf { mode == Mode.PHOTO && menu == Menu.NONE }, enter = popEnter, exit = popExit) { code ->
+                        QrChip(
+                            QrRules.kind(code), QrRules.shown(code), QrRules.canOpen(code) && !launch.secure,
+                            onOpen = { try { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(code.trim())).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) } catch (_: Exception) { say("Nothing can open this") } },
+                            onCopy = { copyText(context, code); say("Copied") },
+                            onShare = { shareText(context, code) },
+                            onClose = { qr = null },
+                        )
+                    }
+                    Visible(suggestText && qr == null && mode == Mode.PHOTO && menu == Menu.NONE && !recording, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
+                        SuggestChip("Try Text mode", { selectMode(Mode.TEXT) })
+                    }
+                }
 
                 Visible(menu == Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
                     Column(Modifier.padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
@@ -1018,7 +1079,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onInterval = { intervalSec = it; menu = Menu.NONE; say(if (it == 0) "Interval shooting: Off" else "Interval: every $it s") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
-                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight,
+                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode == Mode.TEXT,
                         onSoft = { AppSettings.softLight = it; menu = Menu.NONE; say("Soft light: ${com.claudeborne.camera.look.SoftLight.label(it)}") },
                         master = isMaster, histogram = AppSettings.showHistogram, faceOk = proCaps?.faceDetect == true, face = AppSettings.faceMetering,
                         onHistogram = { AppSettings.showHistogram = !AppSettings.showHistogram; menu = Menu.NONE; say("Histogram: ${if (AppSettings.showHistogram) "On" else "Off"}") },
@@ -1027,6 +1088,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 }
             }
             ErrorOverlay(state, onRetry = engine::retry)
+            BusyOverlay(readingText, "READING TEXT", null)
+            AnimatedOverlay(textResult, enter = overlayEnter, exit = overlayExit, modifier = Modifier.fillMaxSize()) { text ->
+                TextEditor(text, { copyText(context, it); say("Copied") }, { shareText(context, it) }, { textResult = null })
+            }
             Visible(viewerOpen, Modifier.fillMaxSize(), enter = overlayEnter, exit = overlayExit) {
                 SessionViewer(sessionShots.toList()) { viewerOpen = false }
             }
@@ -1103,3 +1168,12 @@ private fun PermissionScreen(refused: Boolean, context: Context, onAsk: () -> Un
 }
 
 private fun bodyText() = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = DarkCb.ink2, textAlign = TextAlign.Start)
+
+private fun copyText(context: Context, text: String) {
+    (context.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("text", text))
+}
+
+private fun shareText(context: Context, text: String) {
+    val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text)
+    runCatching { context.startActivity(Intent.createChooser(send, "Share").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+}

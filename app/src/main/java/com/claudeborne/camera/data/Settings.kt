@@ -59,6 +59,9 @@ object Settings {
     var extra243 by Pref("extra243", true)
     var defaultWide by Pref("defaultWide", 0) // the "1x" button: 0 = 24 mm, 1 = 28 mm, 2 = 35 mm
 
+    var qrScan by Pref("qrScan", true) // look for QR codes in Photo mode
+    var recommendText by Pref("recommendText", true) // suggest Text mode when text fills the frame
+
     // Video
     var hevc by Pref("hevc", true) // High efficiency video; 10-bit HDR always uses it
     var bitrateHigh by Pref("bitrateHigh", true) // Bitrate: High quality (the stock default) or Standard

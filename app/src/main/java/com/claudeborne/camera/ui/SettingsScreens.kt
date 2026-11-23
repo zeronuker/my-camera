@@ -37,7 +37,7 @@ import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
@@ -145,6 +145,14 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
             SettingsPage.GRID -> Page("GRID AND GUIDES", { page = SettingsPage.COMPOSITION }) {
                 Group { GridKind.entries.forEachIndexed { i, kind -> row { RadioRow(kind.label, AppSettings.gridKind == i, { AppSettings.gridKind = i }) } } }
             }
+            SettingsPage.SCANNING -> Page("TEXT AND QR CODE SCANNING", up) {
+                Group(footer = "Looks for QR codes in Photo mode and shows what they say; nothing opens until you tap OPEN. Everything is read on the phone.") {
+                    row { SwitchRow("QR code scanning", AppSettings.qrScan, { AppSettings.qrScan = it }) }
+                }
+                Group(footer = "In Photo mode, suggests Text mode when text fills the frame.") {
+                    row { SwitchRow("Recommend Text Scanner", AppSettings.recommendText, { AppSettings.recommendText = it }) }
+                }
+            }
             SettingsPage.ORIENTATION -> Page("PHOTO ORIENTATION", up) {
                 Group(footer = "The screen always stays upright; this decides how the saved photo or video is turned.") {
                     row { RadioRow("Follow system", !AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = false }, "Photos and videos are saved upright for the screen.") }
@@ -214,6 +222,7 @@ private fun PhotoTab(open: (SettingsPage) -> Unit) {
         row { NavRow("Touch and hold shutter button", if (AppSettings.holdForBurst) "Burst" else "Off") { open(SettingsPage.HOLD) } }
         row { NavRow("Shooting methods", if (AppSettings.tapToCapture) "Tap to capture" else "Off") { open(SettingsPage.METHODS) } }
         row { NavRow("Lens focal length") { open(SettingsPage.LENS) } }
+        row { NavRow("Text and QR code scanning", if (AppSettings.qrScan || AppSettings.recommendText) "On" else "Off") { open(SettingsPage.SCANNING) } }
     }
 }
 

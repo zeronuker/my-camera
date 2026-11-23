@@ -82,6 +82,12 @@ class PreviewRenderer(
     private var histFbo = 0
     private var histW = 0
     private var histH = 0
+    private var smallW = 0
+    private var smallH = 0
+    /** Receives small RGBA copies of the live picture (bottom row first) for QR and text scanning; the picture is upright and not mirrored. */
+    @Volatile var analysis: ((ByteArray, Int, Int) -> Unit)? = null
+    @Volatile var analysisEveryMs = 400L
+    private var analysisAt = 0L
 
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
@@ -208,6 +214,7 @@ class PreviewRenderer(
     override fun onDrawFrame(gl: GL10?) {
         drawScreen()
         maybeHistogram()
+        maybeAnalysis()
     }
 
     private fun drawScreen() {
@@ -388,9 +395,9 @@ class PreviewRenderer(
     }
 
     /** Draws the current camera frame. [assist] adds the Pro assistants (screen only); [log] applies the flat log look. */
-    private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false) {
+    private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false, plain: Boolean = false) {
         GLES20.glUseProgram(oesProgram)
-        applyLook(outW, outH)
+        applyLook(outW, outH, if (plain) Look.NONE else look)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uPeak"), if (assist && peaking) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uZebra"), if (assist && zebra) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uLog"), if (log) 1f else 0f)
@@ -406,8 +413,7 @@ class PreviewRenderer(
     }
 
     /** Sets the look uniforms of the OES program (the program is already in use) and keeps the filter's table on texture unit 1. */
-    private fun applyLook(outW: Int, outH: Int) {
-        val look = look
+    private fun applyLook(outW: Int, outH: Int, look: Look) {
         val v = Effects.Values(look, outW.toFloat() / outH.coerceAtLeast(1))
         fun loc(name: String) = GLES20.glGetUniformLocation(oesProgram, name)
         GLES20.glUniform1f(loc("uOn"), v.on)
@@ -434,17 +440,12 @@ class PreviewRenderer(
         }
     }
 
-    /** About five times a second: draws the frame small into a scratch texture, reads it back and counts its brightness. */
-    private fun maybeHistogram() {
-        val sink = histogram ?: return
-        if (!hasFrame) return
-        val now = System.nanoTime()
-        if (now - histAt < 200_000_000L) return
-        histAt = now
-        val w = 96
+    /** The live picture drawn small into a scratch texture and read back as RGBA rows (bottom row first, as GL reads); null when it failed. */
+    private fun readSmall(w: Int, plain: Boolean): ByteArray? {
         val boxH = if (boxHeight in 1 until viewH) boxHeight else viewH
-        val h = (w.toFloat() * boxH / viewW.coerceAtLeast(1)).toInt().coerceIn(16, 256)
-        try {
+        val h = (w.toFloat() * boxH / viewW.coerceAtLeast(1)).toInt().coerceIn(16, 2048)
+        smallW = w; smallH = h
+        return try {
             if (histTex == 0) {
                 val ids = IntArray(1)
                 GLES20.glGenTextures(1, ids, 0); histTex = ids[0]
@@ -460,17 +461,36 @@ class PreviewRenderer(
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, histFbo)
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, histTex, 0)
             GLES20.glViewport(0, 0, w, h)
-            drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, w, h), w, h)
+            drawOes(PreviewMath.matrix(sensorOrientation, mirror && !plain, bufferWidth, bufferHeight, w, h), w, h, plain = plain)
             val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
-            val bytes = ByteArray(w * h * 4).also { pixels.get(it) }
-            sink(Histogram.of(bytes))
+            ByteArray(w * h * 4).also { pixels.get(it) }
         } catch (_: Throwable) {
-            // the histogram is a nice-to-have: a failed read never touches the picture
+            null // these reads are nice-to-haves: a failed one never touches the picture
         } finally {
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
             GLES20.glViewport(0, 0, viewW, viewH)
         }
+    }
+
+    /** About five times a second: counts how bright the pixels of a small copy of the picture are. */
+    private fun maybeHistogram() {
+        val sink = histogram ?: return
+        if (!hasFrame) return
+        val now = System.nanoTime()
+        if (now - histAt < 200_000_000L) return
+        histAt = now
+        readSmall(96, plain = false)?.let { sink(Histogram.of(it)) }
+    }
+
+    /** Every [analysisEveryMs] while [analysis] is set: a small copy of the picture, without any look and never mirrored (so text reads right), for QR and text scanning. */
+    private fun maybeAnalysis() {
+        val sink = analysis ?: return
+        if (!hasFrame) return
+        val now = System.nanoTime()
+        if (now - analysisAt < analysisEveryMs * 1_000_000L) return
+        analysisAt = now
+        readSmall(640, plain = true)?.let { sink(it, smallW, smallH) }
     }
 
     private fun drawHeld(alpha: Float) {

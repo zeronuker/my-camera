@@ -227,6 +227,8 @@ internal fun MenuPanel(
     master: Boolean = false, histogram: Boolean = false, faceOk: Boolean = false, face: Boolean = false, onHistogram: () -> Unit = {}, onFace: () -> Unit = {},
     /** Photo's menu has Soft light (Master has it among the styles). */
     showSoft: Boolean = false, soft: Int = 0, onSoft: (Int) -> Unit = {},
+    /** Text mode (and Scan Docs) keep only Aspect ratio and Settings. */
+    short: Boolean = false,
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
         AnimatedContent(menu, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "menu") { page ->
@@ -236,10 +238,10 @@ internal fun MenuPanel(
                     val items = buildList<@Composable () -> Unit> {
                         add { MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) } }
                         if (showSoft) add { MenuItem(Icon.SOFT_LIGHT, "Soft light", soft > 0) { onPage(Menu.SOFT) } }
-                        add { MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) } }
+                        if (!short) add { MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) } }
                         if (master) add { MenuItem(Icon.HISTOGRAM, "Histogram", histogram, onHistogram) }
                         if (master && faceOk) add { MenuItem(Icon.FACE_METERING, "Face metering", face, onFace) }
-                        add { MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) } }
+                        if (!short) add { MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) } }
                         if (showSettings) add { MenuItem(Icon.GEAR, "Settings", false, onSettings) }
                     }
                     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
