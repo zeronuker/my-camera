@@ -253,6 +253,13 @@ Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extens
 - Macro shot + auto-macro switch to the ultrawide (physical `3`, focuses to 3.5 cm) when close.
 - AI Telescope Zoom: Real-ESRGAN upscale on long-zoom shots (slow; progress bar).
 
+**Built in Phase 7 so far (parts 1, 2 and 4; details in the hand-over note):**
+- **Night** (strip, after PHOTO): the NIGHT Camera Extension as an extension session (`CameraEngine.configureExtension`); only the zoom, EV, orientation and quality keys the extension lists are sent; a refused session falls back to the normal camera with a message and hides Night until restart. Hidden where the camera has no NIGHT extension (the emulator). **Not testable on the emulator: needs the phone.** Settings > Photo has a test switch "Night processing for all photos" (the daytime experiment). "Try Night mode" chip in low light (ISO 1600 or 1/10 s).
+- **Action mode** (Photo menu, only where the camera lists the ACTION scene mode), **Clear / Classic burst** (Clear waits up to 0.5 s for focus before each frame), **Macro shot + Auto macro** (ultra wide lens through zoom 0.6x; auto switches when the subject is closer than 9 diopters and out of focus for a moment; Settings > Photo).
+- **Auto HDR** (Photo menu, rear camera): three exposures (0, -2, +2 EV) fused with OpenCV Mertens after AlignMTB. **Long exposure** (mode LONG EXP): 2 / 5 / 10 / 30 s of frames, averaged (smooth) or brightest-pixel (light trails); the phone must be still. **Panorama** (mode PANO): the gyroscope triggers a picture every 18 degrees, tap again to stitch. OpenCV's Android package has no Stitcher, so the joiner is ours (cylindrical warp, ORB matching, feathered blend; checked on frames from a true rotating-camera model).
+- **Live photo** (Photo menu, rear camera): a small H.264 encoder fed by the GL pipeline keeps about 1.7 s in memory; on the shutter it adds 1.5 s, muxes an MP4 (no sound) and appends it to the JPEG with Google's Motion Photo XMP. Forces plain JPEG (no Ultra HDR or HEIF). Looks and the watermark are applied before the clip is appended.
+- **Still to build:** Portrait (BOKEH rear, own segmentation front) and video depth of field (need ML Kit Selfie/Subject Segmentation) and AI Telescope Zoom (LiteRT + Real-ESRGAN): both wait for the owner's OK on the libraries.
+
 ### Phase 8 — retouch / beauty (Opus)
 
 - Retouch panel (`12-retouch-presets.jpg`, `11`, `15`, `16`): presets Original / Natural / Classic; Reset; sliders Skin texture, Skin tone, Cheeks, Head size, Eye size, Face width, Face length, Hairline, Temples, Cheekbones, Nose. Live, via face mesh + GL warp and skin smoothing; same result in the saved photo.
