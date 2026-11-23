@@ -77,6 +77,7 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
     private var muxStarted = false
     @Volatile private var muxFailed = false
     @Volatile private var samples = 0
+    @Volatile private var framesOut = 0 // frames the video encoder produced (for the error text)
 
     @Volatile private var running = false
     @Volatile private var paused = false
@@ -279,7 +280,7 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
                 runCatching { resolver.delete(u, null, null) } // nothing was recorded: no empty file left behind
             }
         }
-        if (keep == null && error == null) error = "Nothing was recorded"
+        if (keep == null && error == null) error = "Nothing was recorded (video frames: $framesOut)"
         main.post { listener.onFinished(keep, error) }
     }
 
@@ -346,10 +347,11 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
                     i >= 0 -> {
                         val buf = codec.getOutputBuffer(i)
                         if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
+                        if (info.size > 0) framesOut++
                         if (cfg.direct && info.size > 0) {
-                            // camera time to file time: relative to the start (the audio's clock), stretched for slo-mo
-                            if (!cfg.cameraClockIsBoot && firstUs < 0) firstUs = info.presentationTimeUs
-                            val rel = if (cfg.cameraClockIsBoot) info.presentationTimeUs - startReal / 1000 else info.presentationTimeUs - firstUs
+                            // camera time to file time: counted from the first frame (whatever clock the camera and encoder use), stretched for slo-mo
+                            if (firstUs < 0) firstUs = info.presentationTimeUs
+                            val rel = info.presentationTimeUs - firstUs
                             if (rel < 0 || !running && !stopping) info.size = 0 else info.presentationTimeUs = rel * factor
                         }
                         if (buf != null && info.size > 0 && track >= 0) {
