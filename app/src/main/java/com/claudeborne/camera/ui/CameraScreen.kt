@@ -41,6 +41,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.rememberUpdatedState
+import com.claudeborne.camera.LaunchKind
+import com.claudeborne.camera.LaunchRequest
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -119,7 +123,7 @@ internal object CameraKeys {
  * error screens. The camera is opened only while this screen is on show and released the moment it pauses.
  */
 @Composable
-fun CameraScreen(onSettings: () -> Unit) {
+fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: () -> Unit) {
     SystemBarIcons(darkIcons = false)
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -132,8 +136,8 @@ fun CameraScreen(onSettings: () -> Unit) {
     var permitted by remember { mutableStateOf(hasCamera(context)) }
     var refused by remember { mutableStateOf(false) }
     var resumed by remember { mutableStateOf(true) }
-    var facing by remember { mutableStateOf(Facing.BACK) }
-    var zoom by remember { mutableFloatStateOf(ZoomStops.wideRatio(AppSettings.defaultWide)) }
+    var facing by remember { mutableStateOf(if (launch.wantsFront) Facing.FRONT else Facing.BACK) }
+    var zoom by remember { mutableFloatStateOf(if (launch.wantsFront) 1f else ZoomStops.wideRatio(AppSettings.defaultWide)) }
     var pinching by remember { mutableStateOf(false) }
     var showedPicture by remember { mutableStateOf(false) }
     var zoomJob by remember { mutableStateOf<Job?>(null) }
@@ -157,7 +161,11 @@ fun CameraScreen(onSettings: () -> Unit) {
     var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
     var heat by remember { mutableStateOf(Heat.OK) }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK); load(MediaActionSound.START_VIDEO_RECORDING); load(MediaActionSound.STOP_VIDEO_RECORDING) } }
-    var mode by remember { mutableStateOf(Mode.PHOTO) }
+    var mode by remember { mutableStateOf(if (launch.wantsVideo) Mode.VIDEO else Mode.PHOTO) }
+    val launchNow by rememberUpdatedState(launch)
+    val onResultNow by rememberUpdatedState(onResult)
+    val sessionShots = remember { mutableStateListOf<SessionShot>() } // lock-screen launch: the only pictures its viewer may show
+    var viewerOpen by remember { mutableStateOf(false) }
     val isVideo = mode.isVideo
     var recorder by remember { mutableStateOf<VideoRecorder?>(null) }
     var recording by remember { mutableStateOf(false) }
@@ -256,9 +264,11 @@ fun CameraScreen(onSettings: () -> Unit) {
     val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
     // slo-mo needs the rear camera's high-speed sizes; a phone without them simply has no SLO-MO in the strip
     val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
-    val shownModes = remember(rearCaps, wantHevc, hsOk) {
+    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { it != Mode.SLOMO || slo }
+        Mode.entries.filter { it != Mode.SLOMO || slo }.filter {
+            when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
+        }
     }
     LaunchedEffect(hsOk) { if (!hsOk && mode == Mode.SLOMO && !recording) mode = Mode.VIDEO } // the camera refused high-speed: slo-mo goes away
     val hdrChoices = remember(caps) {
@@ -319,7 +329,9 @@ fun CameraScreen(onSettings: () -> Unit) {
                 PhotoSaver.save(context, photo.bytes, photo.format, exif, photo.squareCrop, System.currentTimeMillis()) { result ->
                     result.onSuccess { uri ->
                         AppSettings.rememberLastPhoto(uri.toString())
+                        if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
                         scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                        if (launchNow.returnsResult) onResultNow(uri) // another app asked for this one photo
                     }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
                 }
             }
@@ -336,9 +348,18 @@ fun CameraScreen(onSettings: () -> Unit) {
         }
         onDispose { } // the listener stays until the engine has closed (see above), so a last photo is still saved
     }
-    LaunchedEffect(Unit) { // the last-shot button after a restart
-        val saved = AppSettings.lastPhotoUri
-        if (saved.isNotEmpty()) thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, Uri.parse(saved)) }?.asImageBitmap()
+    // the last-shot button: after a restart and on every new launch. A lock-screen launch (also one that reaches a camera that was already
+    // open) forgets every earlier picture, so nothing taken before it can show; a capture for another app shows none either.
+    LaunchedEffect(launch.serial) {
+        if (launch.secure || launch.returnsResult) {
+            thumb = null
+            sessionShots.clear()
+            viewerOpen = false
+            menu = Menu.NONE
+        } else {
+            val saved = AppSettings.lastPhotoUri
+            if (saved.isNotEmpty()) thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, Uri.parse(saved)) }?.asImageBitmap()
+        }
     }
     // "Auto-rotate": photos follow how the phone is held, though the screen stays portrait; "Follow system" keeps them upright for portrait
     DisposableEffect(AppSettings.photoAutoRotate, resumed) {
@@ -395,11 +416,20 @@ fun CameraScreen(onSettings: () -> Unit) {
         zoomJob = scope.launch { Animatable(zoom).animateTo(clampZoom(ratio), tween(MOTION_MS)) { zoom = value } }
     }
     fun openLast() {
-        val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(AppSettings.lastPhotoUri), if (AppSettings.lastIsVideo) "video/*" else "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (launch.secure) { if (sessionShots.isNotEmpty()) viewerOpen = true; return } // locked: only this launch's own pictures
+        val type = if (AppSettings.lastIsVideo) "video/*" else "image/*"
+        val uri = Uri.parse(AppSettings.lastPhotoUri)
+        // the gallery manager opens its viewer on the camera roll at this item (swipe through DCIM/Camera); an older gallery just views the one file
+        val review = Intent("com.android.camera.action.REVIEW").setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION).setPackage(GALLERY)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(uri, type).addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         try {
-            context.startActivity(Intent(view).setPackage(GALLERY))
+            context.startActivity(review)
         } catch (_: ActivityNotFoundException) {
-            runCatching { context.startActivity(Intent.createChooser(view, "Open with")) }
+            try {
+                context.startActivity(Intent(view).setPackage(GALLERY))
+            } catch (_: ActivityNotFoundException) {
+                runCatching { context.startActivity(Intent.createChooser(view, "Open with")) }
+            }
         }
     }
 
@@ -467,8 +497,10 @@ fun CameraScreen(onSettings: () -> Unit) {
                 recorder = null
                 if (uri != null) {
                     AppSettings.rememberLast(uri.toString(), true)
+                    if (launchNow.secure) sessionShots.add(SessionShot(uri, true))
                     scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
                     say(error ?: "Video saved")
+                    if (launchNow.returnsResult) onResultNow(uri)
                 } else if (error != null) {
                     say(error)
                 }
@@ -551,6 +583,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                 withContext(Dispatchers.Main) {
                     PhotoSaver.save(context, bytes, StillFormat.JPEG, null, false, System.currentTimeMillis()) { result ->
                         result.onSuccess { uri ->
+                            if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
                             if (!recording && !savingVideo) { AppSettings.rememberLastPhoto(uri.toString()); scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() } }
                         }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
                     }
@@ -572,6 +605,14 @@ fun CameraScreen(onSettings: () -> Unit) {
         say(m.label)
     }
 
+    LaunchedEffect(launch.serial) {
+        if (recording || savingVideo) return@LaunchedEffect
+        val want = if (launch.wantsVideo) Mode.VIDEO else if (launch.wantsPhoto) Mode.PHOTO else null
+        if (want != null) {
+            if (want != mode) selectMode(want)
+            if ((facing == Facing.FRONT) != launch.wantsFront) flip()
+        }
+    }
     LaunchedEffect(recording) {
         while (recording) {
             recMs = recorder?.activeMs() ?: 0
@@ -774,7 +815,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                             }
                         }
                         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode)
+                            if (shownModes.size > 1) ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode) else Spacer(Modifier.height(36.dp))
                         }
                     }
                 }
@@ -788,7 +829,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                         onFocus = { focusHeld = !focusHeld; engine.holdFocus(focusHeld); menu = Menu.NONE; say("Focus lock: ${if (focusHeld) "On" else "Off"}") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         hdrChoices = listOf("Off" to 0) + hdrChoices,
-                        modifier = Modifier.padding(bottom = 16.dp),
+                        modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
                     ) else MenuPanel(
                         menu, aspect, timerSec, intervalSec,
                         onPage = { menu = it },
@@ -796,11 +837,14 @@ fun CameraScreen(onSettings: () -> Unit) {
                         onTimer = { timerSec = it; menu = Menu.NONE; say(if (it == 0) "Timer: Off" else "Timer: $it s") },
                         onInterval = { intervalSec = it; menu = Menu.NONE; say(if (it == 0) "Interval shooting: Off" else "Interval: every $it s") },
                         onSettings = { menu = Menu.NONE; onSettings() },
-                        modifier = Modifier.padding(bottom = 16.dp),
+                        modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
                     )
                 }
             }
             ErrorOverlay(state, onRetry = engine::retry)
+            Visible(viewerOpen, Modifier.fillMaxSize(), enter = overlayEnter, exit = overlayExit) {
+                SessionViewer(sessionShots.toList()) { viewerOpen = false }
+            }
             micAsk?.let { blocked ->
                 MicDialog(
                     blocked, onAllow = { askMic.launch(Manifest.permission.RECORD_AUDIO) },

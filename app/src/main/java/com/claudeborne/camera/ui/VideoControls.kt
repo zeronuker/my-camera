@@ -181,7 +181,7 @@ internal fun RecordTimer(ms: Long, paused: Boolean, extra: String? = null) {
 internal fun VideoMenuPanel(
     page: Menu, showHdr: Boolean, hdr: Int, showSteady: Boolean, steady: Boolean, focusHeld: Boolean,
     onPage: (Menu) -> Unit, onHdr: (Int) -> Unit, onSteady: () -> Unit, onFocus: () -> Unit, onSettings: () -> Unit,
-    hdrChoices: List<Pair<String, Int>>, modifier: Modifier = Modifier,
+    hdrChoices: List<Pair<String, Int>>, modifier: Modifier = Modifier, showSettings: Boolean = true,
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
         AnimatedContent(page, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "video menu") { p ->
@@ -205,7 +205,7 @@ internal fun VideoMenuPanel(
                     }
                     if (showSteady) VideoMenuItem("Ultra Steady", steady, onSteady) { CbIcon(Icon.STEADY, glide(steady, DarkCb.mint, Color.White), size = 26.dp) }
                     VideoMenuItem("Focus lock", focusHeld, onFocus) { CbIcon(Icon.FOCUS_LOCK, glide(focusHeld, DarkCb.mint, Color.White), size = 26.dp) }
-                    VideoMenuItem("Settings", false, onSettings) { CbIcon(Icon.GEAR, Color.White, size = 26.dp) }
+                    if (showSettings) VideoMenuItem("Settings", false, onSettings) { CbIcon(Icon.GEAR, Color.White, size = 26.dp) }
                 }
             }
         }

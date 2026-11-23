@@ -218,7 +218,7 @@ internal fun EvDial(ev: Float, onChange: (Float) -> Unit, onReset: () -> Unit) {
 internal fun MenuPanel(
     menu: Menu, aspect: Aspect, timerSec: Int, intervalSec: Int,
     onPage: (Menu) -> Unit, onAspect: (Aspect) -> Unit, onTimer: (Int) -> Unit, onInterval: (Int) -> Unit, onSettings: () -> Unit,
-    modifier: Modifier = Modifier,
+    modifier: Modifier = Modifier, showSettings: Boolean = true,
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
         AnimatedContent(menu, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "menu") { page ->
@@ -227,7 +227,7 @@ internal fun MenuPanel(
                     MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) }
                     MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) }
                     MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) }
-                    MenuItem(Icon.GEAR, "Settings", false, onSettings)
+                    if (showSettings) MenuItem(Icon.GEAR, "Settings", false, onSettings)
                 }
                 Menu.ASPECT -> MenuPage("ASPECT RATIO", { onPage(Menu.MAIN) }) {
                     Aspect.entries.forEach { Choice(it.label, it == aspect) { onAspect(it) } }

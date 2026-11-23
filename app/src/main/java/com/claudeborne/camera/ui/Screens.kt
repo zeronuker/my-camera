@@ -56,7 +56,7 @@ private enum class Screen { SPLASH, CAMERA, SETTINGS, ABOUT, DIAGNOSTICS }
 
 /** Phase 0 navigation: splash, an empty camera screen, Settings, About, Diagnostics. Each screen fades into the next. */
 @Composable
-fun Root() {
+fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.LaunchRequest(), onResult: (android.net.Uri?) -> Unit = {}) {
     var screen by remember { mutableStateOf(Screen.SPLASH) }
     LaunchedEffect(Unit) { delay(700); screen = Screen.CAMERA }
     BackHandler(screen == Screen.SETTINGS || screen == Screen.ABOUT || screen == Screen.DIAGNOSTICS) {
@@ -68,13 +68,13 @@ fun Root() {
                 SystemBarIcons(darkIcons = false)
                 Text("CAMERA", style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
             }
-            Screen.CAMERA -> CameraScreen { screen = Screen.SETTINGS }
+            Screen.CAMERA -> CameraScreen(launch, onResult) { if (!launch.secure) screen = Screen.SETTINGS }
             Screen.SETTINGS -> SettingsScreen({ screen = Screen.CAMERA }, { screen = Screen.ABOUT })
             Screen.ABOUT -> AboutScreen({ screen = Screen.SETTINGS }, { screen = Screen.DIAGNOSTICS })
             Screen.DIAGNOSTICS -> DiagnosticsScreen { screen = Screen.ABOUT }
         }
     }
-    UpdateDialog()
+    if (!launch.secure) UpdateDialog() // nothing but the camera over the lock screen
 }
 
 @Composable
