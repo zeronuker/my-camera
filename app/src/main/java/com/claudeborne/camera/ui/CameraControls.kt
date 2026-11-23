@@ -355,6 +355,17 @@ internal fun Toast(message: Pair<String, Int>?) {
     }
 }
 
+/** An amber warning while the phone is hot; it stays until the phone has cooled down. */
+@Composable
+internal fun HeatChip(heat: com.claudeborne.camera.camera.Heat) {
+    var last by remember { mutableStateOf(heat) }
+    if (heat != com.claudeborne.camera.camera.Heat.OK) last = heat
+    Visible(heat != com.claudeborne.camera.camera.Heat.OK, enter = popEnter, exit = popExit) {
+        val text = if (last == com.claudeborne.camera.camera.Heat.TOO_HOT) "TOO HOT · LET IT COOL DOWN" else "PHONE IS HOT · NO BURSTS"
+        Text(text, Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.6f)).border(1.dp, Warn, CircleShape).padding(horizontal = 16.dp, vertical = 8.dp), style = monoStyle(Warn, 1.2.sp).copy(fontSize = 11.sp))
+    }
+}
+
 /** A small number badge (photos in a burst or interval run). */
 @Composable
 internal fun CountBadge(count: Int) {

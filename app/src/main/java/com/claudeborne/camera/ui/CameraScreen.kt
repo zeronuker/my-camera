@@ -64,7 +64,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.claudeborne.camera.camera.CameraEngine
 import com.claudeborne.camera.camera.CameraEngine.Facing
+import com.claudeborne.camera.camera.Heat
 import com.claudeborne.camera.camera.ZoomStops
+import android.os.PowerManager
+import androidx.core.content.ContextCompat
 import com.claudeborne.camera.capture.Aspect
 import com.claudeborne.camera.capture.AspectMath
 import com.claudeborne.camera.capture.Ev
@@ -134,6 +137,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     var shutterTick by remember { mutableIntStateOf(0) }
     var deviceDegrees by remember { mutableIntStateOf(0) }
     var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
+    var heat by remember { mutableStateOf(Heat.OK) }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
     fun say(text: String) { toast = text to ((toast?.second ?: 0) + 1) }
 
@@ -169,10 +173,22 @@ fun CameraScreen(onSettings: () -> Unit) {
         owner.lifecycle.addObserver(observer)
         onDispose {
             owner.lifecycle.removeObserver(observer)
-            engine.close()
+            engine.close() // waits for a photo still on its way; the listener below must still be set until then
+            engine.listener = null
             engine.release()
             sound.release()
         }
+    }
+    // the phone's heat: warn, stop bursts when hot, refuse photos when much too hot
+    DisposableEffect(Unit) {
+        val power = context.getSystemService(Context.POWER_SERVICE) as PowerManager
+        heat = Heat.of(power.currentThermalStatus)
+        val watch = PowerManager.OnThermalStatusChangedListener { heat = Heat.of(it) }
+        power.addThermalStatusListener(ContextCompat.getMainExecutor(context), watch)
+        onDispose { power.removeThermalStatusListener(watch) }
+    }
+    LaunchedEffect(heat) {
+        if (heat != Heat.OK && runJob != null) { runJob?.cancel(); say("Stopped: the phone is hot") }
     }
     LaunchedEffect(permitted, resumed, texture, facing, aspect) {
         val st = texture
@@ -226,7 +242,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                 say(message)
             }
         }
-        onDispose { engine.listener = null }
+        onDispose { } // the listener stays until the engine has closed (see above), so a last photo is still saved
     }
     LaunchedEffect(Unit) { // the last-shot button after a restart
         val saved = AppSettings.lastPhotoUri
@@ -288,6 +304,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     suspend fun captureOnce(useFlash: Boolean): Boolean {
         val i = engine.info ?: return false
         if (engine.state != CameraEngine.State.Streaming) return false
+        if (heat == Heat.TOO_HOT) { say("The phone is too hot. Let it cool down."); return false }
         if (!PhotoSaver.hasRoom()) { say("Storage is full"); return false }
         val front = facing == Facing.FRONT
         val mode = if (useFlash) flash else Flash.OFF
@@ -304,6 +321,7 @@ fun CameraScreen(onSettings: () -> Unit) {
         evOpen = false
         if (runJob != null) { runJob?.cancel(); say("Stopped"); return }
         if (engine.state != CameraEngine.State.Streaming || engine.capturing) return
+        if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
         runJob = scope.launch {
             try {
                 if (timerSec > 0) {
@@ -329,6 +347,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     }
     fun holdStart() {
         if (!AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
+        if (heat != Heat.OK) return say("No burst while the phone is hot")
         menu = Menu.NONE
         bursting = true
         runJob = scope.launch {
@@ -415,7 +434,10 @@ fun CameraScreen(onSettings: () -> Unit) {
                 RoundButton(Modifier.align(Alignment.TopEnd).padding(16.dp), onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; evOpen = false }) {
                     CbIcon(Icon.SIX_DOT, if (menu != Menu.NONE) DarkCb.mint else Color.White, size = 24.dp)
                 }
-                Box(Modifier.align(Alignment.TopCenter).padding(top = 74.dp)) { Toast(toast) }
+                Column(Modifier.align(Alignment.TopCenter).padding(top = 74.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Toast(toast)
+                    HeatChip(heat)
+                }
                 Box(Modifier.align(Alignment.Center)) { Countdown(countdown) }
 
                 Visible(menu == Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
@@ -435,7 +457,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                             Thumbnail(thumb, PhotoSaver.saving > 0, ::openLast)
                             Box(contentAlignment = Alignment.Center) {
                                 Shutter(
-                                    enabled = state == CameraEngine.State.Streaming && !engine.capturing, running = runJob != null,
+                                    enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
                                     onTap = ::shutterTap, onHoldStart = ::holdStart, onHoldEnd = ::holdEnd,
                                 )
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }

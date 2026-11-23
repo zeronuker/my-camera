@@ -142,8 +142,13 @@ class CameraEngine(context: Context) {
         handler.post { retries = 0; if (wantTexture != null) start() }
     }
 
-    /** Releases the camera and waits (briefly) until it is really free. */
+    /**
+     * Releases the camera and waits (briefly) until it is really free. A photo that is still on its way is given a moment to
+     * arrive first, so leaving the screen right after the shutter does not lose it.
+     */
     fun close() {
+        val patience = SystemClock.uptimeMillis() + 2000
+        while (capturing && SystemClock.uptimeMillis() < patience) Thread.sleep(25)
         val done = CountDownLatch(1)
         handler.post {
             stop()
@@ -281,6 +286,8 @@ class CameraEngine(context: Context) {
             texture.setDefaultBufferSize(w, h)
             surface = Surface(texture)
             state = State.Opening
+            // a camera that never answers must end in a message, not a frozen black viewfinder
+            handler.postDelayed({ if (mine == generation && state == State.Opening) fail(Kind.FAILED, "the camera did not answer") }, 8000)
             manager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     if (mine != generation) return camera.close()
