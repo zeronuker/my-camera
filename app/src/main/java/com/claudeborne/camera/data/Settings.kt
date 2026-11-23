@@ -61,6 +61,9 @@ object Settings {
 
     var qrScan by Pref("qrScan", true) // look for QR codes in Photo mode
     var recommendText by Pref("recommendText", true) // suggest Text mode when text fills the frame
+    var nightAlways by Pref("nightAlways", false) // test: the Night extension for every photo, to compare with the plain camera in daylight
+    var burstClear by Pref("burstClear", false) // false: Classic burst (as fast as the camera goes); true: Clear burst (each frame waits for the focus)
+    var autoMacro by Pref("autoMacro", true) // switch to the ultra wide lens when the subject is closer than the main lens can focus
     var showPalm by Pref("showPalm", true) // an open palm in front of the camera starts a 3 second timer (the stock default is on)
     var smartSuggestions by Pref("smartSuggestions", true) // hints such as "Try Text mode"
 

@@ -87,8 +87,12 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                 ) { row { SwitchRow("High efficiency video", AppSettings.hevc, { AppSettings.hevc = it }) } }
             }
             SettingsPage.HOLD -> Page("TOUCH AND HOLD SHUTTER", up) {
-                Group(footer = "Keep the shutter pressed to take photos one after another until you let go. Clear burst (sharper frames) comes later.") {
+                Group(footer = "Keep the shutter pressed to take photos one after another until you let go.") {
                     row { SwitchRow("Take burst photos", AppSettings.holdForBurst, { AppSettings.holdForBurst = it }) }
+                }
+                Group("Burst mode", "Clear waits for the focus before every frame: sharper frames, a slower burst. Classic is as fast as the camera goes.") {
+                    row { RadioRow("Classic", !AppSettings.burstClear, { AppSettings.burstClear = false }) }
+                    row { RadioRow("Clear", AppSettings.burstClear, { AppSettings.burstClear = true }) }
                 }
             }
             SettingsPage.METHODS -> Page("SHOOTING METHODS", up) {
@@ -227,6 +231,14 @@ private fun PhotoTab(open: (SettingsPage) -> Unit) {
         row { NavRow("Shooting methods", listOfNotNull("Tap to capture".takeIf { AppSettings.tapToCapture }, "Show palm".takeIf { AppSettings.showPalm && com.claudeborne.camera.scan.HandScanner.supported }).joinToString(", ").ifEmpty { "Off" }) { open(SettingsPage.METHODS) } }
         row { NavRow("Lens focal length") { open(SettingsPage.LENS) } }
         row { NavRow("Text and QR code scanning", if (AppSettings.qrScan || AppSettings.recommendText) "On" else "Off") { open(SettingsPage.SCANNING) } }
+    }
+    Group(footer = "Switches to the ultra wide lens (it focuses from 3.5 cm) when the subject is too close for the main lens.") {
+        row { SwitchRow("Auto macro", AppSettings.autoMacro, { AppSettings.autoMacro = it }) }
+    }
+    if (com.claudeborne.camera.camera.Extensions.nightAvailable(LocalContext.current)) Group(
+        footer = "A test: takes every Photo mode picture with the phone's own Night processing, so you can compare it with the plain camera in daylight. Slower; no Ultra HDR.",
+    ) {
+        row { SwitchRow("Night processing for all photos", AppSettings.nightAlways, { AppSettings.nightAlways = it }) }
     }
 }
 

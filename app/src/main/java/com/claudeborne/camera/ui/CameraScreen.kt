@@ -105,6 +105,7 @@ import com.claudeborne.camera.scan.Enhance
 import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
+import android.hardware.camera2.CameraExtensionCharacteristics
 import com.claudeborne.camera.scan.LensShare
 import com.claudeborne.camera.scan.FrameScanner
 import com.claudeborne.camera.scan.QrRules
@@ -202,6 +203,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var formatOpen by remember { mutableStateOf(false) }
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
     val scanner = remember { FrameScanner(context.applicationContext) }
+    var macro by remember { mutableStateOf(false) } // the ultra wide lens is on for a close-up
+    var action by remember { mutableStateOf(false) } // Action scene mode
     val palmHook = remember { arrayOf<() -> Unit>({}) } // 0: the palm was seen long enough: start the 3 second timer
     var qr by remember { mutableStateOf<String?>(null) } // the last QR code seen; it goes away when it has not been seen for a while or is dismissed
     var qrSeenAt by remember { mutableLongStateOf(0L) }
@@ -331,9 +334,12 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
     // slo-mo needs the rear camera's high-speed sizes; a phone without them simply has no SLO-MO in the strip
     val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
-    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind) {
+    val nightOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_NIGHT) && !engine.extRefused
+    val extWanted = if (nightOk && !isVideo && !wantRaw && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways))) CameraExtensionCharacteristics.EXTENSION_NIGHT else -1
+    LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
+    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -362,18 +368,19 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         )
     } else null
     LaunchedEffect(caps, isVideo, picked == null) { if (isVideo && caps != null && picked == null) say("This camera cannot record video") }
-    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw) {
+    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw, extWanted) {
         val st = texture
         val view = glView
         if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null)) {
             // camera sizes are listed landscape, so the screen shape is its long side over its short side (about 2.2 on this phone)
             renderer.freeze() // every reopen (mode, quality, camera, HDR) keeps the last picture until the new one streams
-            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie, raw = wantRaw), setup)
+            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie, raw = wantRaw), setup, extWanted)
         }
     }
     // Pro: the manual choices go to the camera; the assistants go to the picture (screen only, never into a photo or video)
     LaunchedEffect(effectivePro) { engine.setPro(effectivePro) }
     LaunchedEffect(look) { renderer.look = look; glView?.requestRender() }
+    LaunchedEffect(action, engine.info, mode) { engine.setAction(action && mode == Mode.PHOTO) }
     LaunchedEffect(scene) { engine.setExposure(ev + scene.ev) }
     LaunchedEffect(mode) { CameraKeys.forceShutter = mode == Mode.UNDERWATER }
     val mintGl = remember { floatArrayOf(DarkCb.mint.red, DarkCb.mint.green, DarkCb.mint.blue) }
@@ -496,6 +503,11 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 say(message)
             }
 
+            override fun onExtensionRefused(message: String) {
+                AppSettings.nightAlways = false
+                say(message)
+            }
+
             override fun onRawRefused() {
                 AppSettings.masterFormat = 0
                 say("RAW is not available here. Master saves JPG.")
@@ -586,6 +598,21 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         zoomJob?.cancel()
         zoomJob = scope.launch { Animatable(zoom).animateTo(clampZoom(ratio), tween(MOTION_MS)) { zoom = value } }
     }
+    val closeUp = !front && (engine.info?.zoomMin ?: 1f) < 0.95f
+    fun enterMacro() { macro = true; engine.info?.let { goTo(it.zoomMin) }; say("Macro") }
+    fun leaveMacro() { macro = false; goTo(wide); say("Macro: Off") }
+    // auto macro: the main lens cannot focus closer than about 10 cm; a subject that close and out of focus for a moment switches to the ultra wide lens
+    LaunchedEffect(mode, facing, resumed) {
+        var close = 0
+        while (true) {
+            delay(300)
+            val near = mode == Mode.PHOTO && AppSettings.autoMacro && closeUp && !macro && zoom in 0.95f..2.5f && !recording &&
+                engine.state == CameraEngine.State.Streaming && engine.liveFocus >= 9f && engine.focus != CameraEngine.Focus.FOCUSED
+            close = if (near) close + 1 else 0
+            if (close >= 4) { close = 0; enterMacro() }
+        }
+    }
+    LaunchedEffect(zoom) { if (macro && zoom > 1.0f) macro = false }
     fun openLast() {
         if (launch.secure) { if (sessionShots.isNotEmpty()) viewerOpen = true; return } // locked: only this launch's own pictures
         val type = if (AppSettings.lastIsVideo) "video/*" else "image/*"
@@ -867,6 +894,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             try {
                 var n = 0
                 while (isActive) {
+                    if (AppSettings.burstClear) { // Clear burst: every frame waits (a moment) for the focus
+                        val until = android.os.SystemClock.elapsedRealtime() + 500
+                        while (engine.focus != CameraEngine.Focus.FOCUSED && android.os.SystemClock.elapsedRealtime() < until) delay(40)
+                    }
                     if (!captureOnce(useFlash = false)) break // a burst never uses the flash: it would wait for the light every time
                     runCount = ++n
                 }
@@ -990,6 +1021,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         RecordTimer(recMs, recPaused, extra)
                     }
                     Toast(toast)
+                    Visible(engine.capturing && extWanted >= 0, enter = popEnter, exit = popExit) { WorkingLine("NIGHT SHOT · HOLD STILL", null) }
                     HeatChip(heat, video = mode.isVideo)
                     Visible(mode == Mode.PROVIDEO && recording, enter = popEnter, exit = popExit) { AudioMeter(micLevel) }
                 }
@@ -1024,6 +1056,12 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     }
                     Visible(mode == Mode.SCAN && scanPages.isNotEmpty() && scanDraft == null && menu == Menu.NONE, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
                         SuggestChip(if (scanPages.size == 1) "Done · 1 page" else "Done · ${scanPages.size} pages", { scanSaveOpen = true })
+                    }
+                    Visible(nightOk && hintsOn && (engine.liveIso >= 1600 || engine.liveNs >= 100_000_000L) && mode == Mode.PHOTO && extWanted < 0 && qr == null && !suggestText && menu == Menu.NONE && !recording, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
+                        SuggestChip("Try Night mode", { selectMode(Mode.NIGHT) })
+                    }
+                    Visible(macro && mode == Mode.PHOTO && menu == Menu.NONE, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
+                        SuggestChip("Macro · tap to leave", ::leaveMacro)
                     }
                     Visible(suggestText && qr == null && mode == Mode.PHOTO && menu == Menu.NONE && !recording, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
                         SuggestChip("Try Text mode", { selectMode(Mode.TEXT) })
@@ -1076,6 +1114,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                     if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else Spacer(Modifier.size(44.dp)) // retouch goes here in a later phase
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->
+                                        macro = false
                                         // the active button steps through the extra focal lengths (28 / 35 mm, 243 mm); the others jump
                                         if (pill.selected) ZoomStops.next(pill.index, zoom, wide, AppSettings.extra28, AppSettings.extra35, AppSettings.extra243)?.let(::goTo)
                                         else goTo(pill.stop)
@@ -1144,6 +1183,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
                         showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode.isScanner,
+                        showAction = mode == Mode.PHOTO && info?.actionOk == true, action = action, onAction = { action = !action; menu = Menu.NONE; say("Action mode: ${if (action) "On" else "Off"}") },
+                        showMacro = mode == Mode.PHOTO && closeUp, macro = macro, onMacro = { menu = Menu.NONE; if (macro) leaveMacro() else enterMacro() },
                         onSoft = { AppSettings.softLight = it; menu = Menu.NONE; say("Soft light: ${com.claudeborne.camera.look.SoftLight.label(it)}") },
                         master = isMaster, histogram = AppSettings.showHistogram, faceOk = proCaps?.faceDetect == true, face = AppSettings.faceMetering,
                         onHistogram = { AppSettings.showHistogram = !AppSettings.showHistogram; menu = Menu.NONE; say("Histogram: ${if (AppSettings.showHistogram) "On" else "Off"}") },

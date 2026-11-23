@@ -8,6 +8,9 @@ import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
+import android.hardware.camera2.CameraExtensionCharacteristics
+import android.hardware.camera2.CameraExtensionSession
+import android.hardware.camera2.params.ExtensionSessionConfiguration
 import android.hardware.camera2.CameraManager
 import android.hardware.camera2.CaptureFailure
 import android.hardware.camera2.CaptureRequest
@@ -24,6 +27,7 @@ import android.hardware.camera2.DngCreator
 import android.hardware.camera2.params.RggbChannelVector
 import android.media.Image
 import android.media.ImageReader
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import android.os.Handler
@@ -68,6 +72,8 @@ class CameraEngine(context: Context) {
         val video: VideoCaps, val cameraClockIsBoot: Boolean, val hasAwbLock: Boolean,
         /** What the camera allows for the Pro controls; each control is hidden when its range is empty. */
         val pro: ProCaps = ProCaps(),
+        /** The camera has an Action scene mode (fast shutter for moving subjects). */
+        val actionOk: Boolean = false,
     )
 
     /**
@@ -102,6 +108,9 @@ class CameraEngine(context: Context) {
 
         /** The camera could not run RAW together with the preview; Master went back to JPG so the viewfinder still starts. */
         fun onRawRefused() {}
+
+        /** The camera refused the extension session (Night, Portrait blur); the normal preview is back and the extension is switched off for this run. */
+        fun onExtensionRefused(message: String) {}
     }
 
     var state: State by mutableStateOf(State.Idle)
@@ -123,6 +132,12 @@ class CameraEngine(context: Context) {
     var liveIso by mutableIntStateOf(0)
         private set
     var liveNs by mutableLongStateOf(0L)
+        private set
+    /** The camera refused (or died in) an extension session this run: Night and the BOKEH portrait are hidden until the app restarts. */
+    var extRefused by mutableStateOf(false)
+        private set
+    /** How close the camera is focused right now, in diopters (1 / metres): 10 means 10 cm. Updated a few times a second. */
+    var liveFocus by mutableFloatStateOf(0f)
         private set
     @Volatile var listener: Listener? = null
 
@@ -165,6 +180,14 @@ class CameraEngine(context: Context) {
     private var focusToken = 0
     private var done: CompletableDeferred<Unit>? = null
 
+    // Camera Extensions (Night, Portrait blur): the OnePlus' own processing, as a session that returns a finished JPEG
+    private var wantExt = -1
+    private var extActive = false
+    private var extSession: CameraExtensionSession? = null
+    private var extKeys: Set<CaptureRequest.Key<*>> = emptySet()
+    @Volatile private var action = false
+    private val extCache = HashMap<Pair<Facing, Int>, Boolean>()
+
     // Pro controls (Master and Pro video): the manual choices, and what the camera reported last
     @Volatile private var pro = Pro()
     private var chars: CameraCharacteristics? = null
@@ -187,8 +210,9 @@ class CameraEngine(context: Context) {
     private var shotToken = 0
 
     /** Opens the camera for [facing] and streams into [texture]; closes whatever was open before. Returns at once. */
-    fun open(facing: Facing, texture: SurfaceTexture, screenAspect: Float, prefs: StillPrefs, video: VideoSetup? = null) {
+    fun open(facing: Facing, texture: SurfaceTexture, screenAspect: Float, prefs: StillPrefs, video: VideoSetup? = null, extension: Int = -1) {
         handler.post {
+            wantExt = extension
             wantVideo = video
             wantFacing = facing
             wantTexture = texture
@@ -197,6 +221,23 @@ class CameraEngine(context: Context) {
             retries = 0
             start()
         }
+    }
+
+    /** Whether the camera of [facing] offers the Camera Extension [ext] (`CameraExtensionCharacteristics.EXTENSION_NIGHT`...). Asked once, then remembered. */
+    fun extensionSupported(facing: Facing, ext: Int): Boolean = synchronized(extCache) {
+        extCache.getOrPut(facing to ext) {
+            try {
+                manager.getCameraExtensionCharacteristics(pickCamera(facing) ?: return@getOrPut false).supportedExtensions.contains(ext)
+            } catch (_: Exception) {
+                false
+            }
+        }
+    }
+
+    /** Action scene mode on or off (a faster shutter for moving subjects), where the camera has it. */
+    fun setAction(on: Boolean) {
+        action = on
+        handler.post { applyRequest() }
     }
 
     /** Called by "TRY AGAIN" on an error screen. */
@@ -369,6 +410,10 @@ class CameraEngine(context: Context) {
         b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(i.zoomMin, i.zoomMax))
         b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Ev.toIndex(evStops, i.evStep, i.evMinIndex, i.evMaxIndex))
         b.set(CaptureRequest.CONTROL_AE_LOCK, locked)
+        if (i.actionOk) { // the builder is reused, so "off" has to be said too
+            b.set(CaptureRequest.CONTROL_MODE, if (action) CaptureRequest.CONTROL_MODE_USE_SCENE_MODE else CaptureRequest.CONTROL_MODE_AUTO)
+            if (action) b.set(CaptureRequest.CONTROL_SCENE_MODE, CaptureRequest.CONTROL_SCENE_MODE_ACTION)
+        }
         val follow = if (wantVideo != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         b.set(CaptureRequest.CONTROL_AF_MODE, if (locked) CaptureRequest.CONTROL_AF_MODE_AUTO else follow)
         val rect = (focusRect ?: faceRect)?.let { arrayOf(it) } // a tapped point beats the face metering
@@ -425,6 +470,7 @@ class CameraEngine(context: Context) {
             liveAt = now
             result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (it != liveIso) liveIso = it }
             result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (it != liveNs) liveNs = it }
+            result.get(CaptureResult.LENS_FOCUS_DISTANCE)?.let { if (it != liveFocus) liveFocus = it }
         }
         val p = pro
         if (!p.faceMetering || focusRect != null || locked || p.focusDiopters != null) {
@@ -467,7 +513,12 @@ class CameraEngine(context: Context) {
             val sizes = map.getOutputSizes(SurfaceTexture::class.java).map { it.width to it.height }
             val caps = videoCaps(chars, map, sizes)
             val video = wantVideo
-            val (w, h) = (if (video != null) (video.width to video.height).takeIf { it in caps.sizes && (hsRecord == null || it in caps.highSpeed) } else choosePreviewSize(sizes))
+            // an extension (Night) has its own preview and photo sizes and a smaller set of request keys
+            val extChars = if (wantExt >= 0 && video == null && hsRecord == null && !extRefused) manager.getCameraExtensionCharacteristics(id).takeIf { wantExt in it.supportedExtensions } else null
+            extActive = extChars != null
+            extKeys = extChars?.getAvailableCaptureRequestKeys(wantExt)?.toSet().orEmpty()
+            val previewSizes = extChars?.getExtensionSupportedSizes(wantExt, SurfaceTexture::class.java)?.map { it.width to it.height }?.ifEmpty { null } ?: sizes
+            val (w, h) = (if (video != null) (video.width to video.height).takeIf { it in caps.sizes && (hsRecord == null || it in caps.highSpeed) } else choosePreviewSize(previewSizes))
                 ?: return if (hsRecord != null) hsFailed("this lens cannot do that high-speed size", mine) else fail(Kind.FAILED, if (video != null) "this camera cannot record that video size" else "no preview size")
             val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
             hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
@@ -476,12 +527,13 @@ class CameraEngine(context: Context) {
 
             fun stillSizes(f: StillFormat) = if (map.isOutputSupportedFor(imageFormat(f))) map.getOutputSizes(imageFormat(f)).orEmpty().map { it.width to it.height } else emptyList()
             if (video == null) { // video sessions have no still stream: a photo while recording is taken from the GL frame
-                val supported = StillFormat.entries.filter { stillSizes(it).isNotEmpty() }.toSet()
-                format = PhotoRules.chooseFormat(wantFacing == Facing.FRONT, wantPrefs.mirrorSelfie, wantPrefs.heif, wantPrefs.ultraHdr, supported)
-                val (sw, sh) = PhotoRules.chooseStillSize(stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
+                val extStill = extChars?.getExtensionSupportedSizes(wantExt, ImageFormat.JPEG)?.map { it.width to it.height }.orEmpty()
+                val supported = if (extActive) setOf(StillFormat.JPEG) else StillFormat.entries.filter { stillSizes(it).isNotEmpty() }.toSet()
+                format = if (extActive) StillFormat.JPEG else PhotoRules.chooseFormat(wantFacing == Facing.FRONT, wantPrefs.mirrorSelfie, wantPrefs.heif, wantPrefs.ultraHdr, supported)
+                val (sw, sh) = PhotoRules.chooseStillSize(if (extActive) extStill else stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
                 reader = ImageReader.newInstance(sw, sh, imageFormat(format), 2).also { it.setOnImageAvailableListener(::onImage, handler) }
                 val raw = rawSizeOf(chars, map)
-                if (wantPrefs.raw && raw != null) rawReader = ImageReader.newInstance(raw.first, raw.second, ImageFormat.RAW_SENSOR, 2).also { it.setOnImageAvailableListener(::onRawImage, handler) }
+                if (wantPrefs.raw && raw != null && !extActive) rawReader = ImageReader.newInstance(raw.first, raw.second, ImageFormat.RAW_SENSOR, 2).also { it.setOnImageAvailableListener(::onRawImage, handler) }
             }
             this.chars = chars
 
@@ -498,6 +550,7 @@ class CameraEngine(context: Context) {
                 caps, chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                 chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true,
                 proCaps(chars, map),
+                actionOk = CaptureRequest.CONTROL_SCENE_MODE_ACTION in (chars.get(CameraCharacteristics.CONTROL_AVAILABLE_SCENE_MODES)?.toList().orEmpty()),
             )
             texture.setDefaultBufferSize(w, h)
             surface = Surface(texture)
@@ -546,11 +599,90 @@ class CameraEngine(context: Context) {
         }
     }
 
+    /** Night (or Portrait blur) as a Camera Extension session: preview and a still JPEG output, requests limited to the keys the extension allows. */
+    private fun configureExtension(camera: CameraDevice, mine: Int, preview: Surface, still: Surface) {
+        val outputs = listOf(OutputConfiguration(preview), OutputConfiguration(still))
+        try {
+            camera.createExtensionSession(
+                ExtensionSessionConfiguration(
+                    wantExt, outputs, executor,
+                    object : CameraExtensionSession.StateCallback() {
+                        override fun onConfigured(session: CameraExtensionSession) {
+                            if (mine != generation) return session.close()
+                            extSession = session
+                            retries = 0
+                            applyRequest()
+                            state = State.Streaming
+                        }
+
+                        override fun onConfigureFailed(session: CameraExtensionSession) {
+                            if (mine != generation) return
+                            extRefused = true
+                            listener?.onExtensionRefused("The camera refused this mode. The normal camera is back.")
+                            start()
+                        }
+                    },
+                ),
+            )
+        } catch (e: Exception) {
+            if (mine != generation) return
+            extRefused = true
+            listener?.onExtensionRefused("This mode could not start (${e.message ?: e.javaClass.simpleName}). The normal camera is back.")
+            start()
+        }
+    }
+
+    private fun <T> CaptureRequest.Builder.setExt(key: CaptureRequest.Key<T>, value: T) { if (key in extKeys) set(key, value) }
+
+    /** The repeating preview request of an extension session: only zoom and exposure compensation, and only if the extension allows them. */
+    private fun applyExt() {
+        val session = extSession ?: return
+        val cam = device ?: return
+        val preview = surface ?: return
+        val i = info ?: return
+        try {
+            val b = cam.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                addTarget(preview)
+                setExt(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(i.zoomMin, i.zoomMax))
+                setExt(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Ev.toIndex(evStops, i.evStep, i.evMinIndex, i.evMaxIndex))
+            }
+            session.setRepeatingRequest(b.build(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {})
+        } catch (_: Exception) {
+            // the session is closing; the next open() starts fresh
+        }
+    }
+
+    private fun captureExtension(shot: Shot) {
+        val session = extSession ?: return finishShot("The camera is not ready")
+        val cam = device ?: return finishShot("The camera is not ready")
+        val out = reader ?: return finishShot("The camera is not ready")
+        val i = info ?: return finishShot("The camera is not ready")
+        try {
+            needRaw = false
+            needJpeg = true
+            val b = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
+                addTarget(out.surface)
+                setExt(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(i.zoomMin, i.zoomMax))
+                setExt(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Ev.toIndex(evStops, i.evStep, i.evMinIndex, i.evMaxIndex))
+                setExt(CaptureRequest.JPEG_ORIENTATION, shot.jpegOrientation)
+                setExt(CaptureRequest.JPEG_QUALITY, 95.toByte())
+                shot.location?.let { setExt(CaptureRequest.JPEG_GPS_LOCATION, it) }
+            }
+            session.capture(b.build(), executor, object : CameraExtensionSession.ExtensionCaptureCallback() {
+                override fun onCaptureStarted(session: CameraExtensionSession, request: CaptureRequest, timestamp: Long) { listener?.onShutter() }
+                override fun onCaptureFailed(session: CameraExtensionSession, request: CaptureRequest) { finishShot("The camera could not take the photo") }
+            })
+        } catch (e: Exception) {
+            finishShot(e.message ?: "The camera could not take the photo")
+        }
+    }
+
     private fun configure(camera: CameraDevice, mine: Int) {
         val record = hsRecord
         val preview = surface ?: return
         val video = wantVideo
         val still = if (video == null) reader?.surface ?: return else null
+        if (extActive && still != null) return configureExtension(camera, mine, preview, still)
         try {
             val outputs = when {
                 record != null -> listOf(OutputConfiguration(preview), OutputConfiguration(record)) // high-speed: preview and recording surface
@@ -624,6 +756,7 @@ class CameraEngine(context: Context) {
     }
 
     private fun applyRequest() {
+        if (extActive) return applyExt()
         val r = request ?: return
         val s = session ?: return
         if (hsRecord != null) { // a constrained high-speed request carries only the frame rate (and the lens zoom): anything more can upset the camera
@@ -664,6 +797,14 @@ class CameraEngine(context: Context) {
     // ---- photos ----
 
     private fun begin(shot: Shot) {
+        if (extActive) { // Night takes a few seconds: the extension merges several frames before the JPEG arrives
+            if (extSession == null || reader == null || pending != null) { done?.complete(Unit); done = null; return }
+            pending = shot
+            capturing = true
+            val token = ++shotToken
+            handler.postDelayed({ if (token == shotToken && pending != null) finishShot("The photo took too long") }, 30_000)
+            return captureExtension(shot)
+        }
         val r = request
         val s = session
         if (r == null || s == null || reader == null || pending != null) {
@@ -859,6 +1000,9 @@ class CameraEngine(context: Context) {
         done = null
         focus = Focus.IDLE
         try { manager.unregisterAvailabilityCallback(availability) } catch (_: Exception) { }
+        try { extSession?.close() } catch (_: Exception) { }
+        extSession = null
+        extActive = false
         try { session?.close() } catch (_: Exception) { }
         try { device?.close() } catch (_: Exception) { }
         try { surface?.release() } catch (_: Exception) { }
