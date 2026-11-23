@@ -106,6 +106,7 @@ import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
 import com.claudeborne.camera.proc.AI_INPUT_MAX
+import com.claudeborne.camera.proc.NightStack
 import com.claudeborne.camera.proc.Portrait
 import com.claudeborne.camera.proc.PortraitRules
 import com.claudeborne.camera.proc.upscale4x
@@ -360,12 +361,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val bokehOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_BOKEH) && !engine.extRefused
     val extWanted = when {
         isVideo || wantRaw -> -1
-        nightOk && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways)) -> CameraExtensionCharacteristics.EXTENSION_NIGHT
+        nightOk && ((mode == Mode.NIGHT && !AppSettings.nightLong) || (mode == Mode.PHOTO && AppSettings.nightAlways)) -> CameraExtensionCharacteristics.EXTENSION_NIGHT
         bokehOk && mode == Mode.PORTRAIT -> CameraExtensionCharacteristics.EXTENSION_BOKEH // the phone's own portrait blur (rear camera)
         else -> -1
     }
+    val ownNight = mode == Mode.NIGHT && (AppSettings.nightLong || !nightOk) && DocScanner.available // our own multi-frame night
     val portraitOwnNow by rememberUpdatedState(mode == Mode.PORTRAIT && extWanted < 0) // our own cut-out and blur: front camera, or no BOKEH
-    LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
+    LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT && !DocScanner.available) mode = Mode.PHOTO }
     // Live photo: while on (Photo, rear camera), the GL pipeline feeds a small encoder that remembers the last moments
     val liveOn = mode == Mode.PHOTO && AppSettings.livePhoto && facing == Facing.BACK && extWanted < 0 && !launch.returnsResult
     // the clip encoder also runs during a recording when "Motion Photo" is on for video (the recorder keeps the main encoder slot)
@@ -384,7 +386,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     }
     val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -793,6 +795,33 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (result != null) saveMerged(result) else say("Could not stack the pictures")
     }
 
+    /** Long night: about eight frames, a little brighter than the camera would choose, lined up and averaged. Tap again to finish early. */
+    suspend fun nightLongShot() {
+        val stack = NightStack()
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        collect = { p -> val bytes = p.bytes; val rot = p.jpegOrientation; pool.execute { runCatching { stack.add(bytes, rot) } } }
+        val base = ev
+        var n = 0
+        try {
+            engine.setExposure(base + 1.5f)
+            delay(400) // the camera settles on the brighter exposure
+            while (currentCoroutineContext().isActive && !finishFlag && n < 8) {
+                sweepProgress = n / 8f
+                if (!captureOnce(useFlash = false)) break
+                n++; runCount = n
+            }
+        } finally {
+            collect = null
+            sweepProgress = null
+            engine.setExposure(base + scene.ev)
+        }
+        if (n < 3) { pool.shutdown(); return say("Too few pictures. Hold still and try again.") }
+        busyText = "MERGING THE NIGHT SHOT"; readingText = true
+        val result = withContext(Dispatchers.Default) { pool.submit {}.get(); pool.shutdown(); runCatching { stack.result() }.getOrNull() }
+        readingText = false
+        if (result != null) saveMerged(result) else say("Could not merge the pictures")
+    }
+
     /** Panorama: the gyroscope says when the phone has turned a step; a picture is taken each step. Tap again to stitch. */
     suspend fun panoShot() {
         val sensors = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
@@ -1052,7 +1081,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (mode.isVideo) return recordTap()
         menu = Menu.NONE
         evOpen = false
-        if (runJob != null) { if ((mode == Mode.PANO || mode == Mode.LONGEXP) && !finishFlag) { finishFlag = true; return }; runJob?.cancel(); say("Stopped"); return }
+        if (runJob != null) { if ((mode == Mode.PANO || mode == Mode.LONGEXP || ownNight) && !finishFlag) { finishFlag = true; return }; runJob?.cancel(); say("Stopped"); return }
         if (engine.state != CameraEngine.State.Streaming || engine.capturing || readingText) return
         if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
         val timerNow = if (mode.oneShot) 0 else timer ?: timerSec // Text and Scan Docs take one picture at once
@@ -1060,6 +1089,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         val multi: (suspend () -> Unit)? = when {
             mode == Mode.PANO -> { { panoShot() } }
             mode == Mode.LONGEXP -> { { longExpShot() } }
+            ownNight -> { { nightLongShot() } }
             mode == Mode.PHOTO && AppSettings.autoHdr && extWanted < 0 && facing == Facing.BACK && DocScanner.available && flash == Flash.OFF -> { { hdrShot() } }
             else -> null
         }
@@ -1210,6 +1240,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     Visible(portraitOwnNow && !readingText, enter = popEnter, exit = popExit) {
                         QualityPill(PortraitRules.label(AppSettings.portraitF), qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
+                    Visible(mode == Mode.NIGHT && nightOk && runJob == null && !readingText, enter = popEnter, exit = popExit) {
+                        QualityPill(if (AppSettings.nightLong) "LONG NIGHT" else "PHONE NIGHT", false) { AppSettings.nightLong = !AppSettings.nightLong; say(if (AppSettings.nightLong) "Long night: about 8 frames, hold still" else "Phone's own Night processing") }
+                    }
                     Visible(mode == Mode.LONGEXP && runJob == null && !readingText, enter = popEnter, exit = popExit) {
                         QualityPill("${AppSettings.lexpSec} S · ${if (AppSettings.lexpTrails) "TRAILS" else "SMOOTH"}", qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
@@ -1236,7 +1269,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     Toast(toast)
                     Visible(engine.capturing && extWanted >= 0, enter = popEnter, exit = popExit) { WorkingLine("NIGHT SHOT · HOLD STILL", null) }
                     Visible(runJob != null && sweepProgress != null, enter = popEnter, exit = popExit) {
-                        WorkingLine(if (mode == Mode.PANO) "SWEEP SLOWLY · TAP TO FINISH" else "LONG EXPOSURE · HOLD STILL · TAP TO FINISH", sweepProgress)
+                        WorkingLine(if (mode == Mode.PANO) "SWEEP SLOWLY · TAP TO FINISH" else "LONG EXPOSURE · HOLD STILL · TAP TO FINISH".let { if (ownNight) "LONG NIGHT · HOLD STILL · TAP TO FINISH" else it }, sweepProgress)
                     }
                     HeatChip(heat, video = mode.isVideo)
                     Visible(mode == Mode.PROVIDEO && recording, enter = popEnter, exit = popExit) { AudioMeter(micLevel) }

@@ -62,6 +62,7 @@ object Settings {
     var qrScan by Pref("qrScan", true) // look for QR codes in Photo mode
     var recommendText by Pref("recommendText", true) // suggest Text mode when text fills the frame
     var nightAlways by Pref("nightAlways", false) // test: the Night extension for every photo, to compare with the plain camera in daylight
+    var nightLong by Pref("nightLong", false) // Night: our own long multi-frame night instead of the phone's Night extension
     var videoMotion by Pref("videoMotion", false) // photos taken while recording include a short moving clip (rear camera, portrait video)
     var portraitF by Pref("portraitF", 1) // index into PortraitRules.F_NUMBERS (f/2.0): how strongly our own portrait blur softens the background
     var aiZoom by Pref("aiZoom", true) // beyond 10x a second picture, redrawn by the Real-ESRGAN model, is saved after the normal one

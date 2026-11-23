@@ -9,6 +9,7 @@ import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.Scalar
+import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import org.opencv.photo.Photo
 import org.opencv.core.MatOfDMatch
@@ -121,6 +122,61 @@ class FrameStack(private val trails: Boolean) {
         sum.convertTo(out8, CvType.CV_8UC3)
         val bitmap = Frames.bitmap(out8)
         out8.release(); sum.release(); total = null
+        return Frames.jpeg(bitmap).also { bitmap.recycle() }
+    }
+}
+
+/**
+ * Long night: frames taken a little brighter than normal are lined up (hand shake moves them a few pixels), averaged (noise falls with the square
+ * root of the frame count) and the shadows are lifted. Added one at a time, like [FrameStack]. A frame that moved too far (a subject, not a shake) is left out.
+ */
+class NightStack {
+    private var total: Mat? = null
+    private var ref: Mat? = null
+    var count = 0
+        private set
+
+    @Synchronized
+    fun add(jpeg: ByteArray, rotation: Int) {
+        val bitmap = Frames.decode(jpeg, rotation, 3072) ?: return
+        val rgb = Frames.rgb(bitmap)
+        bitmap.recycle()
+        val gray = Mat()
+        val small = Mat()
+        val g32 = Mat()
+        Imgproc.cvtColor(rgb, gray, Imgproc.COLOR_RGB2GRAY)
+        Imgproc.resize(gray, small, Size(), 0.25, 0.25, Imgproc.INTER_AREA)
+        small.convertTo(g32, CvType.CV_32F)
+        gray.release(); small.release()
+        val f = Mat()
+        rgb.convertTo(f, CvType.CV_32FC3)
+        rgb.release()
+        val sum = total
+        val first = ref
+        if (sum == null || first == null) { total = f; ref = g32; count = 1; return }
+        if (f.size() != sum.size() || g32.size() != first.size()) { f.release(); g32.release(); return }
+        val shift = Imgproc.phaseCorrelate(first, g32)
+        g32.release()
+        if (kotlin.math.abs(shift.x) > first.cols() * 0.15 || kotlin.math.abs(shift.y) > first.rows() * 0.15) { f.release(); return }
+        val move = Mat(2, 3, CvType.CV_64F)
+        move.put(0, 0, 1.0, 0.0, -shift.x * 4, 0.0, 1.0, -shift.y * 4) // the small picture was a quarter of the size
+        val aligned = Mat()
+        Imgproc.warpAffine(f, aligned, move, f.size(), Imgproc.INTER_LINEAR, Core.BORDER_REPLICATE)
+        Core.add(sum, aligned, sum)
+        f.release(); aligned.release(); move.release()
+        count++
+    }
+
+    @Synchronized
+    fun result(): ByteArray? {
+        val sum = total ?: return null
+        val f = Mat()
+        val out8 = Mat()
+        sum.convertTo(f, CvType.CV_32FC3, 1.0 / 255.0 / count) // average, 0..1
+        Core.pow(f, 0.8, f) // lifts the shadows: the frames were dark
+        f.convertTo(out8, CvType.CV_8UC3, 255.0)
+        val bitmap = Frames.bitmap(out8)
+        f.release(); out8.release(); sum.release(); ref?.release(); total = null; ref = null
         return Frames.jpeg(bitmap).also { bitmap.recycle() }
     }
 }
