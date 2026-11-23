@@ -8,3 +8,4 @@ _work/
 .idea/
 graphify-out/
 docs/stock-reference/
+.kotlin/

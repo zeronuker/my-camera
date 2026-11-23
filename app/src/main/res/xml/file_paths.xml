@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- the downloaded update APK -->
+    <cache-path name="update" path="update/" />
+    <!-- probe report and crash log copies handed to the share sheet -->
+    <cache-path name="share" path="share/" />
+</paths>
