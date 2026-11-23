@@ -65,8 +65,8 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
 
     val isVideo get() = style != null
 
-    /** The neighbour in the strip, or null at its ends. */
-    fun step(by: Int): Mode? = entries.getOrNull(ordinal + by)
+    /** The neighbour in the strip (only among the [shown] modes), or null at its ends. */
+    fun step(by: Int, shown: List<Mode> = entries): Mode? = shown.getOrNull(shown.indexOf(this) + by)
 }
 
 private val RedRecord = Color(0xFFD33A33)
@@ -74,7 +74,7 @@ private val GlassFill = Color.Black.copy(alpha = 0.42f)
 
 /** The mode names under the shutter: tap one, or swipe along the strip. A pill glides under the chosen name. */
 @Composable
-internal fun ModeStrip(selected: Mode, enabled: Boolean, onSelect: (Mode) -> Unit) {
+internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit) {
     val density = LocalDensity.current
     val spots = remember { mutableStateMapOf<Int, Pair<Float, Float>>() } // left edge and width of each name, in pixels
     val spot = spots[selected.ordinal]
@@ -82,12 +82,13 @@ internal fun ModeStrip(selected: Mode, enabled: Boolean, onSelect: (Mode) -> Uni
     val w by animateFloatAsState(spot?.second ?: 0f, tween(MOTION_MS), label = "mode pill width")
     val current by rememberUpdatedState(selected)
     val on by rememberUpdatedState(enabled)
+    val list by rememberUpdatedState(shown)
     Box(
         Modifier.pointerInput(Unit) {
             var total = 0f
             detectHorizontalDragGestures(
                 onDragStart = { total = 0f },
-                onDragEnd = { if (on) { if (total < -50f) current.step(1)?.let(onSelect) else if (total > 50f) current.step(-1)?.let(onSelect) } },
+                onDragEnd = { if (on) { if (total < -50f) current.step(1, list)?.let(onSelect) else if (total > 50f) current.step(-1, list)?.let(onSelect) } },
                 onHorizontalDrag = { _, dx -> total += dx },
             )
         },
@@ -99,7 +100,7 @@ internal fun ModeStrip(selected: Mode, enabled: Boolean, onSelect: (Mode) -> Uni
             )
         }
         Row(Modifier.height(36.dp)) {
-            Mode.entries.forEach { m ->
+            shown.forEach { m ->
                 Box(
                     Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled && m != selected) { onSelect(m) }
                         .onGloballyPositioned { spots[m.ordinal] = it.positionInParent().x - with(density) { 14.dp.toPx() } to it.size.width + with(density) { 28.dp.toPx() } },

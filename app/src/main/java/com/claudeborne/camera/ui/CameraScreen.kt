@@ -252,6 +252,12 @@ fun CameraScreen(onSettings: () -> Unit) {
         else -> VideoOption(Res.entries[AppSettings.videoRes.coerceIn(0, 3)], AppSettings.videoFps)
     }
     val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
+    // slo-mo needs the rear camera's high-speed sizes; a phone without them simply has no SLO-MO in the strip
+    val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
+    val shownModes = remember(rearCaps, wantHevc) {
+        val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
+        Mode.entries.filter { it != Mode.SLOMO || slo }
+    }
     val hdrChoices = remember(caps) {
         if (caps == null || !Encoders.hasTenBit()) emptyList()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
@@ -653,7 +659,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                         else if (AppSettings.tapToCapture && !mode.isVideo) shutterTap()
                         else focus(pos, lock = false)
                     },
-                    onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d)?.let(::selectMode) },
+                    onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d, shownModes)?.let(::selectMode) },
                     onLongPress = { pos -> if (menu == Menu.NONE) focus(pos, lock = true) },
                     onZoom = { change -> zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true },
                     onExposureDrag = { dy -> setEv(ev + dy / 150f) },
@@ -750,7 +756,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                             }
                         }
                         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            ModeStrip(mode, enabled = !recording && !savingVideo, onSelect = ::selectMode)
+                            ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode)
                         }
                     }
                 }
