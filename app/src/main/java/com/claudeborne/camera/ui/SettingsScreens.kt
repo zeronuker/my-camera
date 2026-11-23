@@ -221,6 +221,7 @@ private fun VideoTab(open: (SettingsPage) -> Unit) {
         row { SwitchRow("Lock white balance", AppSettings.lockWb, { AppSettings.lockWb = it }, "Do not automatically adjust white balance while recording videos.") }
         row { NavRow("Adaptive frame rate", ADAPTIVE[AppSettings.adaptiveFps.coerceIn(0, 2)]) { open(SettingsPage.ADAPTIVE) } }
         row { NavRow("Bitrate", if (AppSettings.bitrateHigh) "High quality" else "Standard") { open(SettingsPage.BITRATE) } }
+        row { SwitchRow("Motion Photo", AppSettings.videoMotion, { AppSettings.videoMotion = it }, "A photo taken while recording also saves a short moving clip around it. Rear camera, portrait videos at 30 or 60 fps, not 10-bit HDR.") }
     }
 }
 

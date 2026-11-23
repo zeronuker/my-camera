@@ -368,17 +368,19 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
     // Live photo: while on (Photo, rear camera), the GL pipeline feeds a small encoder that remembers the last moments
     val liveOn = mode == Mode.PHOTO && AppSettings.livePhoto && facing == Facing.BACK && extWanted < 0 && !launch.returnsResult
-    DisposableEffect(liveOn, resumed) {
+    // the clip encoder also runs during a recording when "Motion Photo" is on for video (the recorder keeps the main encoder slot)
+    val clipOn = liveOn || (recording && mode.style == VideoStyle.NORMAL && !recHdr && !recDirect && recTurn == 0 && facing == Facing.BACK && AppSettings.videoMotion)
+    DisposableEffect(clipOn, resumed) {
         var r: ClipRing? = null
-        if (liveOn && resumed) {
+        if (clipOn && resumed) {
             r = runCatching { ClipRing(960, 1280) }.getOrNull()
             val made = r
             if (made != null) {
-                renderer.startEncoding(PreviewRenderer.Encoding(made.surface, 960, 1280, 0, false, false, { ts -> ts })) { ok -> if (!ok) say("Live photo could not start") }
+                renderer.startClip(PreviewRenderer.Encoding(made.surface, 960, 1280, 0, false, false, { ts -> ts })) { ok -> if (!ok) say("Live photo could not start") }
                 ring = made
             } else say("Live photo is not available here")
         }
-        onDispose { val old = r; if (old != null) { ring = null; renderer.stopEncoding { old.release() } } }
+        onDispose { val old = r; if (old != null) { ring = null; renderer.stopClip { old.release() } } }
     }
     val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
@@ -972,8 +974,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             scope.launch(Dispatchers.IO) {
                 val bytes = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
                 bitmap.recycle()
+                val motion = ring.takeIf { AppSettings.videoMotion }
+                val mp4 = if (motion != null) { delay(1500); motion.mp4(java.io.File(context.cacheDir, "share").apply { mkdirs() }) } else null // the moments after the press
                 withContext(Dispatchers.Main) {
-                    PhotoSaver.save(context, bytes, StillFormat.JPEG, null, false, System.currentTimeMillis()) { result ->
+                    PhotoSaver.save(context, bytes, StillFormat.JPEG, null, false, System.currentTimeMillis(), null, mp4) { result ->
                         result.onSuccess { uri ->
                             if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
                             if (!recording && !savingVideo) { AppSettings.rememberLastPhoto(uri.toString()); scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() } }

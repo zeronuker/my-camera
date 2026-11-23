@@ -92,6 +92,9 @@ class PreviewRenderer(
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
     private var target: Target? = null
+    /** A second encoder next to the recorder (Live photo clips): it gets the same frames, drawn without the watermark. */
+    @Volatile private var clip: Encoding? = null
+    private var clipTarget: Target? = null
     private var snap: ((Bitmap?) -> Unit)? = null
     private var snapWidth = 0
     private var snapHeight = 0
@@ -133,9 +136,22 @@ class PreviewRenderer(
 
     /** Starts drawing every frame to [e] too. [ready] (called on the GL thread) says whether the encoder surface could be used. */
     fun startEncoding(e: Encoding, ready: (Boolean) -> Unit) = post {
-        val ok = try { openTarget(e); e.overlay?.let(::uploadOverlay); true } catch (_: Exception) { closeTarget(); false }
+        val ok = try { target = openTarget(e); e.overlay?.let(::uploadOverlay); true } catch (_: Exception) { closeTarget(); false }
         if (ok) encoding = e
         ready(ok)
+    }
+
+    /** Starts drawing every frame to a second encoder too (the Live photo clip); works with or without a recording. [ready] runs on the GL thread. */
+    fun startClip(e: Encoding, ready: (Boolean) -> Unit) = post {
+        val ok = try { clipTarget = openTarget(e); true } catch (_: Exception) { clipTarget?.let(::destroy); clipTarget = null; false }
+        if (ok) clip = e
+        ready(ok)
+        requestRender()
+    }
+
+    fun stopClip(done: () -> Unit) {
+        clip = null
+        post { clipTarget?.let(::destroy); clipTarget = null; done() }
     }
 
     /** Stops drawing to the encoder and frees its surface; [done] runs on the GL thread afterwards. */
@@ -185,7 +201,7 @@ class PreviewRenderer(
         val st = SurfaceTexture(oesTexture)
         st.setOnFrameAvailableListener {
             pending.incrementAndGet()
-            val e = encoding
+            val e = encoding ?: clip
             if (e == null) {
                 requestRender()
             } else {
@@ -220,7 +236,7 @@ class PreviewRenderer(
     private fun drawScreen() {
         val st = surfaceTexture ?: return
         var gotFrame = false
-        if (encoding == null) { // while recording, the encoder events take every frame (see encodeFrame)
+        if (encoding == null && clip == null) { // while an encoder runs, its events take every frame (see encodeFrame)
             gotFrame = takeFrame(st)
             while (pending.get() > 0 && takeFrame(st)) { /* show the newest */ }
         }
@@ -277,7 +293,7 @@ class PreviewRenderer(
         }
     }
 
-    private fun openTarget(e: Encoding) {
+    private fun openTarget(e: Encoding): Target {
         val display = EGL14.eglGetCurrentDisplay()
         val shared = EGL14.eglGetCurrentContext()
         val bits = if (e.tenBit) 10 else 8
@@ -298,7 +314,7 @@ class PreviewRenderer(
             EGL14.eglDestroyContext(display, context)
             throw IllegalStateException("no surface for the encoder")
         }
-        target = Target(display, context, surface)
+        return Target(display, context, surface)
     }
 
     private fun uploadOverlay(bitmap: Bitmap) {
@@ -329,31 +345,44 @@ class PreviewRenderer(
         if (overlayTex != 0) { GLES20.glDeleteTextures(1, intArrayOf(overlayTex), 0); overlayTex = 0 }
         val t = target ?: return
         target = null
+        destroy(t)
+    }
+
+    private fun destroy(t: Target) {
         EGL14.eglDestroySurface(t.display, t.surface)
         EGL14.eglDestroyContext(t.display, t.context)
     }
 
-    /** GL thread: takes the next camera frame and draws it into the encoder's surface with the time the recorder gave it. */
-    private fun encodeFrame(e: Encoding) {
+    /** GL thread: takes the next camera frame and draws it into the recorder's surface and the clip encoder's, with the times they gave it. [primary] is the encoder whose event this is. */
+    private fun encodeFrame(primary: Encoding) {
         val st = surfaceTexture ?: return
-        val t = target
-        if (encoding !== e || t == null) { takeFrame(st); return } // recording ended: keep the texture moving for the screen
+        val main = encoding
+        val second = clip
+        if (main !== primary && second !== primary) { takeFrame(st); return } // that encoder ended: keep the texture moving for the screen
         if (!takeFrame(st)) return
-        val pts = e.gate(st.timestamp)
-        if (pts < 0) return
         val screen = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
         val screenRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ)
         val screenContext = EGL14.eglGetCurrentContext()
+        val display = EGL14.eglGetCurrentDisplay()
         try {
-            if (!EGL14.eglMakeCurrent(t.display, t.surface, t.surface, t.context)) return
-            GLES20.glViewport(0, 0, e.width, e.height)
-            drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), e.width, e.height, log = e.log)
-            if (overlayTex != 0) drawOverlay()
-            EGLExt.eglPresentationTimeANDROID(t.display, t.surface, pts)
-            EGL14.eglSwapBuffers(t.display, t.surface)
+            val a = target
+            if (main != null && a != null) drawInto(main, a, st.timestamp, watermark = true)
+            val b = clipTarget
+            if (second != null && b != null) drawInto(second, b, st.timestamp, watermark = false)
         } finally {
-            EGL14.eglMakeCurrent(t.display, screen, screenRead, screenContext)
+            EGL14.eglMakeCurrent(display, screen, screenRead, screenContext)
         }
+    }
+
+    private fun drawInto(e: Encoding, t: Target, frameTimestampNs: Long, watermark: Boolean) {
+        val pts = e.gate(frameTimestampNs)
+        if (pts < 0) return
+        if (!EGL14.eglMakeCurrent(t.display, t.surface, t.surface, t.context)) return
+        GLES20.glViewport(0, 0, e.width, e.height)
+        drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), e.width, e.height, log = e.log)
+        if (watermark && overlayTex != 0) drawOverlay()
+        EGLExt.eglPresentationTimeANDROID(t.display, t.surface, pts)
+        EGL14.eglSwapBuffers(t.display, t.surface)
     }
 
     private fun takeSnapshot() {
