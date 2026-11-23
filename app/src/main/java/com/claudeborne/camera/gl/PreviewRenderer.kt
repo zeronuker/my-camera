@@ -37,11 +37,11 @@ class PreviewRenderer(
     /**
      * Where the same camera frame is drawn a second time: the video encoder's input surface. [turn] is the clockwise turn of the
      * upright picture for a phone held sideways, [gate] returns the presentation time (ns) to give a frame or -1 to leave it out
-     * (paused, time-lapse skipping, before the start). [screenEvery] draws only every n-th frame to the screen (120 and 240 fps).
+     * (paused, time-lapse skipping, before the start).
      */
     class Encoding(
         val surface: Surface, val width: Int, val height: Int, val turn: Int, val mirror: Boolean, val tenBit: Boolean,
-        val screenEvery: Int, val gate: (frameTimestampNs: Long) -> Long,
+        val gate: (frameTimestampNs: Long) -> Long,
     )
 
     private class Target(val display: EGLDisplay, val context: EGLContext, val surface: EGLSurface)
@@ -58,7 +58,6 @@ class PreviewRenderer(
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
     private var target: Target? = null
-    private var sinceScreen = 0
     private var snap: ((Bitmap?) -> Unit)? = null
     private var snapWidth = 0
     private var snapHeight = 0
@@ -99,7 +98,7 @@ class PreviewRenderer(
     /** Starts drawing every frame to [e] too. [ready] (called on the GL thread) says whether the encoder surface could be used. */
     fun startEncoding(e: Encoding, ready: (Boolean) -> Unit) = post {
         val ok = try { openTarget(e); true } catch (_: Exception) { closeTarget(); false }
-        if (ok) { sinceScreen = 0; encoding = e }
+        if (ok) encoding = e
         ready(ok)
     }
 
@@ -143,12 +142,10 @@ class PreviewRenderer(
                 requestRender()
             } else {
                 post { encodeFrame(e) } // every frame is handled on the GL thread, one by one, whatever the screen is doing
-                if (++sinceScreen >= e.screenEvery) { sinceScreen = 0; requestRender() }
+                requestRender()
             }
         }
         surfaceTexture = st
-        // the screen must not wait for the display: 120 and 240 fps frames would pile up behind it
-        runCatching { EGL14.eglSwapInterval(EGL14.eglGetCurrentDisplay(), 0) }
         onTexture(st)
     }
 

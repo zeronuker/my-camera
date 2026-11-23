@@ -121,9 +121,9 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                 }
             }
             SettingsPage.ORIENTATION -> Page("PHOTO ORIENTATION", up) {
-                Group(footer = "The screen always stays upright; this decides how the saved photo is turned.") {
-                    row { RadioRow("Follow system", !AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = false }, "Photos are saved upright for the screen.") }
-                    row { RadioRow("Auto-rotate", AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = true }, "Photos turn with the way you hold the phone.") }
+                Group(footer = "The screen always stays upright; this decides how the saved photo or video is turned.") {
+                    row { RadioRow("Follow system", !AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = false }, "Photos and videos are saved upright for the screen.") }
+                    row { RadioRow("Auto-rotate", AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = true }, "Photos and videos turn with the way you hold the phone.") }
                 }
             }
         }

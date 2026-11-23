@@ -168,6 +168,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     var recSize by remember { mutableStateOf(1080 to 1920) }
     var recOption by remember { mutableStateOf<VideoOption?>(null) }
     var recHdr by remember { mutableStateOf(false) }
+    var recDirect by remember { mutableStateOf(false) } // high-speed: the camera feeds the encoder directly
     var recLens by remember { mutableStateOf<ClosedFloatingPointRange<Float>?>(null) }
     var focusHeld by remember { mutableStateOf(false) }
     var qualityOpen by remember { mutableStateOf(false) }
@@ -263,11 +264,12 @@ fun CameraScreen(onSettings: () -> Unit) {
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
     }
     val hdrNow = if (mode == Mode.VIDEO && picked?.highSpeed != true) hdrChoices.firstOrNull { it.second == AppSettings.videoHdr }?.let { Hdr.entries[it.second - 1] } else null
+    // the viewfinder always runs as a normal session; 120 and 240 fps switch to a high-speed session only while recording
     val setup = if (isVideo && caps != null && picked != null) {
-        val hs = picked.highSpeed
+        val fps = if (picked.highSpeed) 30 else picked.fps
         CameraEngine.VideoSetup(
-            picked.res.width, picked.res.height, picked.fps, hs, hdrNow, VideoQuality.stabilisation(caps, AppSettings.ultraSteady, hs),
-            if (hs) picked.fps to picked.fps else VideoQuality.aeRange(caps, picked.fps, VideoQuality.adaptive(AppSettings.adaptiveFps, picked.fps)) ?: (picked.fps to picked.fps),
+            picked.res.width, picked.res.height, fps, hdrNow, VideoQuality.stabilisation(caps, AppSettings.ultraSteady, false),
+            VideoQuality.aeRange(caps, fps, VideoQuality.adaptive(AppSettings.adaptiveFps, fps)) ?: (fps to fps),
         )
     } else null
     LaunchedEffect(caps, isVideo, picked == null) { if (isVideo && caps != null && picked == null) say("This camera cannot record video") }
@@ -423,7 +425,13 @@ fun CameraScreen(onSettings: () -> Unit) {
         savingVideo = true // the bar on the thumbnail moves until the file is complete
         engine.setAwbLock(false)
         if (AppSettings.shutterSound) sound.play(MediaActionSound.STOP_VIDEO_RECORDING)
-        r.stop(renderer)
+        if (recDirect) {
+            renderer.freeze()
+            engine.stopHighSpeed { r.stop(null) } // the camera first stops writing into the encoder
+            renderer.unfreeze()
+        } else {
+            r.stop(renderer)
+        }
         note?.let(::say)
     }
     leaveHooks[0] = { stopRecording("Recording stopped. Your video is saved.") }
@@ -443,7 +451,14 @@ fun CameraScreen(onSettings: () -> Unit) {
         val playFps = if (style == VideoStyle.NORMAL) o.fps else 30
         val bitrate = VideoRules.bitrate(fw, fh, playFps, hevc, AppSettings.bitrateHigh, s.hdr != null, Encoders.maxBitrate(hevc))
         val place = if (AppSettings.locationTags) LastLocation.get(context) else null
-        val cfg = VideoRecorder.Config(fw, fh, playFps, o.fps, hevc, s.hdr, bitrate, style == VideoStyle.NORMAL, style, AppSettings.lapseSpeed, i.cameraClockIsBoot, place)
+        val direct = o.highSpeed
+        // high-speed frames go straight from the camera to the encoder in the camera's own (landscape) shape and are turned on playback
+        val hint = PhotoRules.jpegOrientation(i.sensorOrientation, deviceDegrees.takeIf { AppSettings.photoAutoRotate } ?: 0, false)
+        val cfg = if (direct) {
+            VideoRecorder.Config(o.res.width, o.res.height, if (style == VideoStyle.SLOMO) 30 else o.fps, o.fps, hevc, null, bitrate, style == VideoStyle.NORMAL, style, AppSettings.lapseSpeed, i.cameraClockIsBoot, place, direct = true, orientationHint = hint)
+        } else {
+            VideoRecorder.Config(fw, fh, playFps, o.fps, hevc, s.hdr, bitrate, style == VideoStyle.NORMAL, style, AppSettings.lapseSpeed, i.cameraClockIsBoot, place)
+        }
         val rec = VideoRecorder(context.applicationContext, cfg, object : VideoRecorder.Listener {
             override fun onFinished(uri: Uri?, error: String?) {
                 savingVideo = false
@@ -464,6 +479,7 @@ fun CameraScreen(onSettings: () -> Unit) {
         recTurn = turn
         recSize = fw to fh
         recHdr = s.hdr != null
+        recDirect = direct
         recMs = 0
         savingVideo = true // creating the file and the encoders takes a moment
         scope.launch {
@@ -476,10 +492,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                 say(if (made.exceptionOrNull()?.message?.contains("microphone") == true) "The microphone could not start" else "The video could not start")
                 return@launch
             }
-            val encoding = PreviewRenderer.Encoding(
-                surface, fw, fh, turn, isFront && AppSettings.mirrorSelfie, s.hdr != null, (o.fps / 60).coerceAtLeast(1), rec::gate,
-            )
-            renderer.startEncoding(encoding) { ok ->
+            val begin = { ok: Boolean ->
                 if (ok) {
                     rec.start()
                     if (AppSettings.lockWb) engine.setAwbLock(true)
@@ -492,8 +505,14 @@ fun CameraScreen(onSettings: () -> Unit) {
                     savingVideo = false
                     recorder = null
                     recOption = null
-                    say("The video encoder could not start")
+                    say(if (direct) "High-speed video did not start. Try a lower frame rate." else "The video encoder could not start")
                 }
+            }
+            if (direct) {
+                renderer.freeze() // the picture stays while the camera switches to its high-speed mode
+                engine.startHighSpeed(surface, o.fps) { ok -> renderer.unfreeze(); begin(ok) }
+            } else {
+                renderer.startEncoding(PreviewRenderer.Encoding(surface, fw, fh, turn, isFront && AppSettings.mirrorSelfie, s.hdr != null, rec::gate), begin)
             }
         }
     }
@@ -747,7 +766,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                                 }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }
                             }
-                            Crossfade(if (recording) (if (normal) 1 else 2) else if (mode == Mode.SLOMO) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
+                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
                                 when (slot) {
                                     0 -> RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
                                     1 -> RoundButton(size = 52, onClick = ::togglePause) { CbIcon(if (recPaused) Icon.PLAY else Icon.PAUSE, if (recPaused) DarkCb.mint else Color.White, size = 26.dp) }

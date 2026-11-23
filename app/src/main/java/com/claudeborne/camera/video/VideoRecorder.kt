@@ -39,6 +39,13 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
         /** Camera timestamps share the clock of SystemClock.elapsedRealtimeNanos (CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE = REALTIME). */
         val cameraClockIsBoot: Boolean,
         val location: Location? = null,
+        /**
+         * High-speed (120 and 240 fps): the camera writes straight into [inputSurface] (a constrained high-speed session
+         * needs a recording surface to deliver every frame; the screen only gets a slower preview), so the frames
+         * are not drawn by GL. The picture is turned by [orientationHint] when played back.
+         */
+        val direct: Boolean = false,
+        val orientationHint: Int = 0,
     )
 
     interface Listener {
@@ -112,6 +119,7 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
             pfd = p
             val m = MediaMuxer(p.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
             cfg.location?.let { runCatching { m.setLocation(it.latitude.toFloat(), it.longitude.toFloat()) } }
+            if (cfg.orientationHint != 0) m.setOrientationHint(cfg.orientationHint)
             muxer = m
             video = createVideoEncoder().also { inputSurface = it.createInputSurface(); it.start() }
             if (cfg.audio) {
@@ -328,6 +336,8 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
         val codec = video ?: return
         val info = MediaCodec.BufferInfo()
         var track = -1
+        var firstUs = -1L
+        val factor = if (cfg.style == VideoStyle.SLOMO) VideoRules.slowFactor(cfg.captureFps).toLong() else 1L
         try {
             while (true) {
                 val i = codec.dequeueOutputBuffer(info, 10_000)
@@ -336,6 +346,12 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
                     i >= 0 -> {
                         val buf = codec.getOutputBuffer(i)
                         if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) info.size = 0
+                        if (cfg.direct && info.size > 0) {
+                            // camera time to file time: relative to the start (the audio's clock), stretched for slo-mo
+                            if (!cfg.cameraClockIsBoot && firstUs < 0) firstUs = info.presentationTimeUs
+                            val rel = if (cfg.cameraClockIsBoot) info.presentationTimeUs - startReal / 1000 else info.presentationTimeUs - firstUs
+                            if (rel < 0 || !running && !stopping) info.size = 0 else info.presentationTimeUs = rel * factor
+                        }
                         if (buf != null && info.size > 0 && track >= 0) {
                             buf.position(info.offset)
                             buf.limit(info.offset + info.size)
