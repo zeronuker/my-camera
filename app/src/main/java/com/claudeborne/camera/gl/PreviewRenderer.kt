@@ -67,6 +67,7 @@ class PreviewRenderer(
     private var snapFbo = 0
     @Volatile private var freezeRequested = false
     @Volatile private var armed = false
+    @Volatile private var frozenAtNs = 0L
 
     private var surfaceTexture: SurfaceTexture? = null
     private var hasFrame = false
@@ -88,6 +89,7 @@ class PreviewRenderer(
     /** Keeps the current picture on screen until [unfreeze]. */
     fun freeze() {
         armed = false
+        frozenAtNs = System.nanoTime()
         freezeRequested = true
         requestRender()
     }
@@ -192,6 +194,7 @@ class PreviewRenderer(
             if (hasFrame) drawLive(boxH)
             return
         }
+        if (!armed && gotFrame && System.nanoTime() - frozenAtNs > FROZEN_MAX_NS) armed = true // nobody unfroze it: never leave the viewfinder stuck
         if (armed && gotFrame && fadeStartNs == 0L) fadeStartNs = System.nanoTime()
         if (fadeStartNs == 0L) {
             drawHeld(1f)
@@ -355,6 +358,7 @@ class PreviewRenderer(
 
     private companion object {
         const val EGL_RECORDABLE_ANDROID = 0x3142
+        const val FROZEN_MAX_NS = 2_500_000_000L
         const val FADE_MS = 260f // same as MOTION_MS in ui/Motion.kt
 
         const val VERTEX = """

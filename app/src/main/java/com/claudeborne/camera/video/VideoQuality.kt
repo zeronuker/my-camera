@@ -42,7 +42,7 @@ object VideoQuality {
      * counts when [mainLens] is true (the probe found it on the main lens only; the others list no 4K high-speed size).
      * [encoderOk] tells whether the video encoder can do a size at a rate (checked against MediaCodec by the caller).
      */
-    fun options(caps: VideoCaps, front: Boolean, mainLens: Boolean, encoderOk: (Res, Int) -> Boolean = { _, _ -> true }): List<VideoOption> {
+    fun options(caps: VideoCaps, front: Boolean, mainLens: Boolean, highSpeed: Boolean = true, encoderOk: (Res, Int) -> Boolean = { _, _ -> true }): List<VideoOption> {
         val out = mutableListOf<VideoOption>()
         for (res in Res.entries) {
             val size = res.width to res.height
@@ -50,7 +50,7 @@ object VideoQuality {
                 if (size in caps.sizes && caps.aeRanges.any { it.second == fps } && encoderOk(res, fps)) out += VideoOption(res, fps)
             }
         }
-        if (!front) {
+        if (!front && highSpeed) {
             for (res in listOf(Res.R720, Res.R1080, Res.R4K)) {
                 if (res == Res.R4K && !mainLens) continue
                 if (120 in caps.highSpeed[res.width to res.height].orEmpty() && encoderOk(res, 120)) out += VideoOption(res, 120)
@@ -60,7 +60,8 @@ object VideoQuality {
     }
 
     /** Slo-mo mode choices: 120 and 240 fps (rear only), 4K only at 120 on the main lens. Highest quality first. */
-    fun sloMoOptions(caps: VideoCaps, mainLens: Boolean, encoderOk: (Res, Int) -> Boolean = { _, _ -> true }): List<VideoOption> {
+    fun sloMoOptions(caps: VideoCaps, mainLens: Boolean, highSpeed: Boolean = true, encoderOk: (Res, Int) -> Boolean = { _, _ -> true }): List<VideoOption> {
+        if (!highSpeed) return emptyList()
         val out = mutableListOf<VideoOption>()
         for (res in listOf(Res.R4K, Res.R1080, Res.R720)) {
             if (res == Res.R4K && !mainLens) continue

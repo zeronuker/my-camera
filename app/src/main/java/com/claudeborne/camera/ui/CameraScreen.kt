@@ -238,13 +238,14 @@ fun CameraScreen(onSettings: () -> Unit) {
     val caps = remember(facing, engine) { engine.videoCapsFor(facing) }
     val wantHevc = AppSettings.hevc
     val mainLens = front || LensZone.isMain(zoom)
-    val options = remember(caps, front, mainLens, mode, wantHevc) {
+    val hsOk = !engine.hsRefused
+    val options = remember(caps, front, mainLens, mode, wantHevc, hsOk) {
         val ok = { res: Res, fps: Int -> Encoders.codecFor(wantHevc, res, fps) != null }
         when {
             caps == null || !isVideo -> emptyList()
-            mode == Mode.SLOMO -> VideoQuality.sloMoOptions(caps, mainLens, ok)
-            mode == Mode.TIMELAPSE -> VideoQuality.timeLapseOptions(VideoQuality.options(caps, front, mainLens, ok))
-            else -> VideoQuality.options(caps, front, mainLens, ok)
+            mode == Mode.SLOMO -> VideoQuality.sloMoOptions(caps, mainLens, hsOk, ok)
+            mode == Mode.TIMELAPSE -> VideoQuality.timeLapseOptions(VideoQuality.options(caps, front, mainLens, hsOk, ok))
+            else -> VideoQuality.options(caps, front, mainLens, hsOk, ok)
         }
     }
     val wanted = when (mode) {
@@ -255,10 +256,11 @@ fun CameraScreen(onSettings: () -> Unit) {
     val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
     // slo-mo needs the rear camera's high-speed sizes; a phone without them simply has no SLO-MO in the strip
     val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
-    val shownModes = remember(rearCaps, wantHevc) {
-        val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
+    val shownModes = remember(rearCaps, wantHevc, hsOk) {
+        val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
         Mode.entries.filter { it != Mode.SLOMO || slo }
     }
+    LaunchedEffect(hsOk) { if (!hsOk && mode == Mode.SLOMO && !recording) mode = Mode.VIDEO } // the camera refused high-speed: slo-mo goes away
     val hdrChoices = remember(caps) {
         if (caps == null || !Encoders.hasTenBit()) emptyList()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
@@ -278,6 +280,7 @@ fun CameraScreen(onSettings: () -> Unit) {
         val view = glView
         if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null)) {
             // camera sizes are listed landscape, so the screen shape is its long side over its short side (about 2.2 on this phone)
+            renderer.freeze() // every reopen (mode, quality, camera, HDR) keeps the last picture until the new one streams
             engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie), setup)
         }
     }
@@ -365,7 +368,6 @@ fun CameraScreen(onSettings: () -> Unit) {
         engine.setExposure(ev)
     }
     fun flip() {
-        renderer.freeze() // keep the last picture while the other camera starts
         flash = Flash.OFF
         focusPoint = null
         facing = if (facing == Facing.BACK) Facing.FRONT else Facing.BACK
@@ -505,7 +507,7 @@ fun CameraScreen(onSettings: () -> Unit) {
                     savingVideo = false
                     recorder = null
                     recOption = null
-                    say(if (direct) "High-speed video did not start. Try a lower frame rate." else if (s.hdr != null) "10-bit HDR could not start. Turn it off in the video menu." else "The video encoder could not start")
+                    if (!direct) say(if (s.hdr != null) "10-bit HDR could not start. Turn it off in the video menu." else "The video encoder could not start")
                 }
             }
             if (direct) {
@@ -564,7 +566,6 @@ fun CameraScreen(onSettings: () -> Unit) {
         qualityOpen = false
         focusPoint = null
         focusHeld = false
-        renderer.freeze() // the picture stays on screen while the camera is set up for the other mode
         if (m == Mode.SLOMO && facing == Facing.FRONT) { facing = Facing.BACK; zoom = wide }
         if (m.isVideo && flash != Flash.TORCH) flash = Flash.OFF
         mode = m
@@ -724,7 +725,6 @@ fun CameraScreen(onSettings: () -> Unit) {
                         if (mode == Mode.TIMELAPSE) "QUALITY" else "RESOLUTION AND FRAME RATE",
                         options.map { o ->
                             Chip(if (mode == Mode.TIMELAPSE) o.res.label else o.label, o == picked) {
-                                if (o != picked) renderer.freeze()
                                 if (mode == Mode.SLOMO) { AppSettings.sloRes = o.res.ordinal; AppSettings.sloFps = o.fps }
                                 else { AppSettings.videoRes = o.res.ordinal; if (mode == Mode.VIDEO) AppSettings.videoFps = o.fps }
                                 qualityOpen = false
@@ -783,8 +783,8 @@ fun CameraScreen(onSettings: () -> Unit) {
                         menu, showHdr = mode == Mode.VIDEO && hdrChoices.isNotEmpty() && picked?.highSpeed != true && !recording, hdr = AppSettings.videoHdr,
                         showSteady = caps?.previewStabilisation == true && picked?.highSpeed != true && !recording, steady = AppSettings.ultraSteady, focusHeld = focusHeld,
                         onPage = { menu = it },
-                        onHdr = { v -> renderer.freeze(); AppSettings.videoHdr = v; menu = Menu.NONE; say(if (v == 0) "10-bit HDR: Off" else "10-bit HDR: ${Hdr.entries[v - 1].label}") },
-                        onSteady = { renderer.freeze(); AppSettings.ultraSteady = !AppSettings.ultraSteady; menu = Menu.NONE; say("Ultra Steady: ${if (AppSettings.ultraSteady) "On" else "Off"}") },
+                        onHdr = { v -> AppSettings.videoHdr = v; menu = Menu.NONE; say(if (v == 0) "10-bit HDR: Off" else "10-bit HDR: ${Hdr.entries[v - 1].label}") },
+                        onSteady = { AppSettings.ultraSteady = !AppSettings.ultraSteady; menu = Menu.NONE; say("Ultra Steady: ${if (AppSettings.ultraSteady) "On" else "Off"}") },
                         onFocus = { focusHeld = !focusHeld; engine.holdFocus(focusHeld); menu = Menu.NONE; say("Focus lock: ${if (focusHeld) "On" else "Off"}") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         hdrChoices = listOf("Off" to 0) + hdrChoices,

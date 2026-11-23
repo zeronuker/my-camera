@@ -104,6 +104,9 @@ class CameraEngine(context: Context) {
     /** Focus and exposure are held where the user long-pressed. */
     var locked by mutableStateOf(false)
         private set
+    /** The camera refused (or died in) a high-speed session this run: 120 and 240 fps choices are hidden until the app restarts. */
+    var hsRefused by mutableStateOf(false)
+        private set
     @Volatile var listener: Listener? = null
 
     private val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
@@ -382,6 +385,7 @@ class CameraEngine(context: Context) {
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     if (mine != generation) return
+                    if (hsRecord != null || hsReady != null) return hsFailed("the camera stopped", mine, reopen = true)
                     fail(Kind.DISCONNECTED)
                     if (retries++ < 3) handler.postDelayed({ if (mine == generation) start() }, 700)
                 }
@@ -389,6 +393,7 @@ class CameraEngine(context: Context) {
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
                     if (mine != generation) return
+                    if (hsRecord != null || hsReady != null) return hsFailed("camera error $error", mine, reopen = true)
                     when (error) {
                         ERROR_IN_USE, ERROR_MAX_IN_USE -> busy()
                         ERROR_DISABLED -> fail(Kind.DISABLED)
@@ -425,27 +430,28 @@ class CameraEngine(context: Context) {
                     object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(s: CameraCaptureSession) {
                             if (mine != generation) return s.close()
-                            session = s
-                            request = camera.createCaptureRequest(if (video != null) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
-                                addTarget(preview)
-                                record?.let { addTarget(it) }
-                                set(CaptureRequest.CONTROL_AF_MODE, if (video != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                            try {
+                                session = s
+                                request = camera.createCaptureRequest(if (video != null) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
+                                    addTarget(preview)
+                                    record?.let { addTarget(it) }
+                                    set(CaptureRequest.CONTROL_AF_MODE, if (video != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                }
+                                retries = 0
+                                applyRequest()
+                                if (record != null && hsRecord == null) return // applyRequest gave up on high-speed and restored the preview
+                                state = State.Streaming
+                                hsReady?.let { hsReady = null; it(true) }
+                                hsStopped?.let { hsStopped = null; it() }
+                            } catch (e: Exception) { // a camera that closed under us must end in a message, not an uncaught crash
+                                if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine, reopen = false)
+                                else fail(Kind.FAILED, e.message ?: e.javaClass.simpleName)
                             }
-                            retries = 0
-                            applyRequest()
-                            state = State.Streaming
-                            hsReady?.let { hsReady = null; it(true) }
-                            hsStopped?.let { hsStopped = null; it() }
                         }
 
                         override fun onConfigureFailed(s: CameraCaptureSession) {
                             if (mine != generation) return
-                            if (record != null) { // high-speed refused: back to the normal preview, and tell the screen
-                                hsRecord = null
-                                hsReady?.let { hsReady = null; it(false) }
-                                configure(camera, mine)
-                                return
-                            }
+                            if (record != null) return hsFailed("the camera refused the high-speed session", mine, reopen = false)
                             // a refused 10-bit or Ultra Steady choice is dropped once, so the viewfinder still comes up
                             if (video != null && (video.hdr != null || video.stabilisation == 2)) {
                                 val what = if (video.hdr != null) "10-bit HDR is not available at this quality" else "Ultra Steady is not available at this quality"
@@ -460,8 +466,23 @@ class CameraEngine(context: Context) {
                 ),
             )
         } catch (e: Exception) {
-            fail(Kind.FAILED, e.message ?: e.javaClass.simpleName)
+            if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine, reopen = false)
+            else fail(Kind.FAILED, e.message ?: e.javaClass.simpleName)
         }
+    }
+
+    /**
+     * The camera could not do (or died in) a high-speed session: tell the screen, hide the 120/240 fps choices, and bring the normal
+     * preview back ([reopen] when the camera itself is gone). The detail goes into the toast so the owner can report it.
+     */
+    private fun hsFailed(detail: String, mine: Int, reopen: Boolean) {
+        hsRecord = null
+        hsRefused = true
+        hsReady?.let { hsReady = null; it(false) }
+        hsStopped?.let { hsStopped = null; it() }
+        listener?.onFailed("High-speed video failed: $detail")
+        if (reopen) handler.postDelayed({ if (mine == generation) start() }, 300)
+        else device?.let { configure(it, mine) }
     }
 
     private fun applyRequest() {
@@ -479,8 +500,9 @@ class CameraEngine(context: Context) {
         try {
             if (s is CameraConstrainedHighSpeedCaptureSession) s.setRepeatingBurst(s.createHighSpeedRequestList(r.build()), previewCallback, handler)
             else s.setRepeatingRequest(r.build(), previewCallback, handler)
-        } catch (_: Exception) {
-            // the session is closing; the next open() starts fresh
+        } catch (e: Exception) {
+            // the session is closing; the next open() starts fresh. A high-speed session that cannot take its request is given up.
+            if (hsRecord != null) hsFailed(e.message ?: e.javaClass.simpleName, generation, reopen = false)
         }
     }
 
