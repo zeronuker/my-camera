@@ -417,6 +417,9 @@ class PreviewRenderer(
         val v = Effects.Values(look, outW.toFloat() / outH.coerceAtLeast(1))
         fun loc(name: String) = GLES20.glGetUniformLocation(oesProgram, name)
         GLES20.glUniform1f(loc("uOn"), v.on)
+        // The two samplers must sit on different texture units even when no look is on: a sampler left at its default (unit 0) next to the
+        // camera's external texture makes strict GPUs (the phone's) refuse every draw, and the viewfinder stays black.
+        GLES20.glUniform1i(loc("uLut"), 1)
         if (v.on > 0.5f) {
             if (look.filter > 0) {
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
@@ -427,7 +430,6 @@ class PreviewRenderer(
                 }
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             }
-            GLES20.glUniform1i(loc("uLut"), 1)
             GLES20.glUniform1f(loc("uFilter"), v.filter)
             GLES20.glUniform1f(loc("uSoft"), v.soft)
             GLES20.glUniform4f(loc("uStyle"), v.style[0], v.style[1], v.style[2], v.style[3])
