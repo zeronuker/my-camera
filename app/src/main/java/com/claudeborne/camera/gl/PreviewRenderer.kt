@@ -12,6 +12,8 @@ import android.opengl.GLES11Ext
 import android.opengl.GLES20
 import android.opengl.GLSurfaceView
 import android.view.Surface
+import com.claudeborne.camera.look.Filters
+import com.claudeborne.camera.look.Look
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.concurrent.atomic.AtomicInteger
@@ -44,6 +46,8 @@ class PreviewRenderer(
         val gate: (frameTimestampNs: Long) -> Long,
         /** Pro video: the file gets the flat "log" look (see the shader below). */
         val log: Boolean = false,
+        /** A transparent picture of the video's size laid over every frame (the watermark); null for none. */
+        val overlay: Bitmap? = null,
     )
 
     private class Target(val display: EGLDisplay, val context: EGLContext, val surface: EGLSurface)
@@ -56,6 +60,13 @@ class PreviewRenderer(
     @Volatile var boxTop = 0
     @Volatile var boxHeight = 0
     private var holdShare = 1f
+
+    /** What is done to the picture besides showing it (filter, Soft light, style, tilt-shift...): live picture, video and snapshot alike. */
+    @Volatile var look: Look = Look.NONE
+    private var lutTex = 0
+    private var overlayProgram = 0
+    private var overlayTex = 0
+    private var lutFilter = -1
 
     /** Pro assistants, drawn on the screen only: never into a video, a snapshot or a saved photo. */
     @Volatile var peaking = false
@@ -116,7 +127,7 @@ class PreviewRenderer(
 
     /** Starts drawing every frame to [e] too. [ready] (called on the GL thread) says whether the encoder surface could be used. */
     fun startEncoding(e: Encoding, ready: (Boolean) -> Unit) = post {
-        val ok = try { openTarget(e); true } catch (_: Exception) { closeTarget(); false }
+        val ok = try { openTarget(e); e.overlay?.let(::uploadOverlay); true } catch (_: Exception) { closeTarget(); false }
         if (ok) encoding = e
         ready(ok)
     }
@@ -142,20 +153,29 @@ class PreviewRenderer(
         histTex = 0
         histFbo = 0
         histW = 0
+        lutFilter = -1
         pending.set(0)
         oesProgram = program(VERTEX, OES_FRAGMENT)
         plainProgram = program(VERTEX, PLAIN_FRAGMENT)
-        val ids = IntArray(3)
-        GLES20.glGenTextures(2, ids, 0)
+        overlayProgram = program(VERTEX, OVERLAY_FRAGMENT)
+        overlayTex = 0
+        val ids = IntArray(4)
+        GLES20.glGenTextures(3, ids, 0)
         oesTexture = ids[0]
         holdTexture = ids[1]
+        lutTex = ids[2]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTex)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
-        GLES20.glGenFramebuffers(1, ids, 2)
-        holdFbo = ids[2]
+        GLES20.glGenFramebuffers(1, ids, 3)
+        holdFbo = ids[3]
         val st = SurfaceTexture(oesTexture)
         st.setOnFrameAvailableListener {
             pending.incrementAndGet()
@@ -274,7 +294,32 @@ class PreviewRenderer(
         target = Target(display, context, surface)
     }
 
+    private fun uploadOverlay(bitmap: Bitmap) {
+        val ids = IntArray(1)
+        GLES20.glGenTextures(1, ids, 0)
+        overlayTex = ids[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTex)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        android.opengl.GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+    }
+
+    /** The watermark, over the frame just drawn into the encoder. */
+    private fun drawOverlay() {
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA) // the picture is premultiplied
+        GLES20.glUseProgram(overlayProgram)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, overlayTex)
+        GLES20.glUniform1i(GLES20.glGetUniformLocation(overlayProgram, "uTex"), 0)
+        drawQuad(overlayProgram)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     private fun closeTarget() {
+        if (overlayTex != 0) { GLES20.glDeleteTextures(1, intArrayOf(overlayTex), 0); overlayTex = 0 }
         val t = target ?: return
         target = null
         EGL14.eglDestroySurface(t.display, t.surface)
@@ -295,7 +340,8 @@ class PreviewRenderer(
         try {
             if (!EGL14.eglMakeCurrent(t.display, t.surface, t.surface, t.context)) return
             GLES20.glViewport(0, 0, e.width, e.height)
-            drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), log = e.log)
+            drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), e.width, e.height, log = e.log)
+            if (overlayTex != 0) drawOverlay()
             EGLExt.eglPresentationTimeANDROID(t.display, t.surface, pts)
             EGL14.eglSwapBuffers(t.display, t.surface)
         } finally {
@@ -321,7 +367,7 @@ class PreviewRenderer(
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, snapFbo)
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, snapTex, 0)
             GLES20.glViewport(0, 0, w, h)
-            drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn))
+            drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn), w, h)
             val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -338,12 +384,13 @@ class PreviewRenderer(
     }
 
     private fun drawLive(boxH: Int) {
-        drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH), assist = true, log = viewLog)
+        drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH), viewW, boxH, assist = true, log = viewLog)
     }
 
     /** Draws the current camera frame. [assist] adds the Pro assistants (screen only); [log] applies the flat log look. */
-    private fun drawOes(matrix: FloatArray, assist: Boolean = false, log: Boolean = false) {
+    private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false) {
         GLES20.glUseProgram(oesProgram)
+        applyLook(outW, outH)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uPeak"), if (assist && peaking) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uZebra"), if (assist && zebra) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uLog"), if (log) 1f else 0f)
@@ -356,6 +403,35 @@ class PreviewRenderer(
         GLES20.glUniformMatrix3fv(GLES20.glGetUniformLocation(oesProgram, "uM"), 1, false, matrix, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(oesProgram, "uSt"), 1, false, transform, 0)
         drawQuad(oesProgram)
+    }
+
+    /** Sets the look uniforms of the OES program (the program is already in use) and keeps the filter's table on texture unit 1. */
+    private fun applyLook(outW: Int, outH: Int) {
+        val look = look
+        val v = Effects.Values(look, outW.toFloat() / outH.coerceAtLeast(1))
+        fun loc(name: String) = GLES20.glGetUniformLocation(oesProgram, name)
+        GLES20.glUniform1f(loc("uOn"), v.on)
+        if (v.on > 0.5f) {
+            if (look.filter > 0) {
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
+                GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTex)
+                if (lutFilter != look.filter) {
+                    GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, 256, 16, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(Filters.lut(look.filter)))
+                    lutFilter = look.filter
+                }
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+            }
+            GLES20.glUniform1i(loc("uLut"), 1)
+            GLES20.glUniform1f(loc("uFilter"), v.filter)
+            GLES20.glUniform1f(loc("uSoft"), v.soft)
+            GLES20.glUniform4f(loc("uStyle"), v.style[0], v.style[1], v.style[2], v.style[3])
+            GLES20.glUniform1f(loc("uSharp"), v.sharp)
+            GLES20.glUniform1f(loc("uVignette"), v.vignette)
+            GLES20.glUniform1f(loc("uUnder"), v.under)
+            GLES20.glUniform4f(loc("uTilt"), v.tilt[0], v.tilt[1], v.tilt[2], v.tilt[3])
+            GLES20.glUniform2f(loc("uOut"), 1f / outW.coerceAtLeast(1), 1f / outH.coerceAtLeast(1))
+            GLES20.glUniform1f(loc("uAspect"), v.aspect)
+        }
     }
 
     /** About five times a second: draws the frame small into a scratch texture, reads it back and counts its brightness. */
@@ -384,7 +460,7 @@ class PreviewRenderer(
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, histFbo)
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, histTex, 0)
             GLES20.glViewport(0, 0, w, h)
-            drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, w, h))
+            drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, w, h), w, h)
             val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
             val bytes = ByteArray(w * h * 4).also { pixels.get(it) }
@@ -440,22 +516,34 @@ class PreviewRenderer(
 
         const val OES_FRAGMENT = """
             #extension GL_OES_EGL_image_external : require
+            #ifdef GL_FRAGMENT_PRECISION_HIGH
+            precision highp float;
+            #else
             precision mediump float;
+            #endif
             varying vec2 vUv;
             uniform samplerExternalOES uTex;
             uniform mat3 uM;
             uniform mat4 uSt;
+            uniform float uOn;
             uniform float uPeak;
             uniform float uZebra;
             uniform float uLog;
             uniform vec2 uPx;
             uniform vec3 uAssist;
+            vec3 texel(vec2 d) {
+                vec2 b = (uM * vec3(d, 1.0)).xy;
+                return texture2D(uTex, (uSt * vec4(b, 0.0, 1.0)).xy).rgb;
+            }
+            """ + Effects.UNIFORMS + Effects.FUNCTIONS + """
             float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             void main() {
                 vec2 b = (uM * vec3(vUv, 1.0)).xy;
                 vec2 uv = (uSt * vec4(b, 0.0, 1.0)).xy;
-                vec3 c = texture2D(uTex, uv).rgb;
-                float l = luma(c);
+                vec3 raw = texture2D(uTex, uv).rgb;
+                vec3 c = raw;
+                if (uOn > 0.5) c = effect(vUv);
+                float l = luma(raw);
                 if (uLog > 0.5) {
                     // our own flat profile: shadows lifted, highlights squeezed, colour pulled back; the grade restores it
                     vec3 f = log2(vec3(1.0) + 30.0 * c) / log2(31.0);
@@ -467,12 +555,19 @@ class PreviewRenderer(
                         - luma(texture2D(uTex, uv + vec2(0.0, uPx.y)).rgb) - luma(texture2D(uTex, uv - vec2(0.0, uPx.y)).rgb));
                     if (e > 0.16) c = mix(c, uAssist, 0.9);
                 }
-                if (uZebra > 0.5 && l > 0.95) {
+                if (uZebra > 0.5 && luma(c) > 0.95) {
                     float s = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 16.0));
                     c = mix(c, vec3(0.05), s * 0.85);
                 }
                 gl_FragColor = vec4(c, 1.0);
             }
+        """
+
+        const val OVERLAY_FRAGMENT = """
+            precision mediump float;
+            varying vec2 vUv;
+            uniform sampler2D uTex;
+            void main() { gl_FragColor = texture2D(uTex, vec2(vUv.x, 1.0 - vUv.y)); }
         """
 
         const val PLAIN_FRAGMENT = """

@@ -13,7 +13,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Text
@@ -30,10 +32,12 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.claudeborne.camera.camera.ZoomStops
+import com.claudeborne.camera.capture.Watermark
+import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
@@ -120,6 +124,27 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                     row { RadioRow("High quality", AppSettings.bitrateHigh, { AppSettings.bitrateHigh = true }) }
                 }
             }
+            SettingsPage.WATERMARK -> Page("WATERMARK", up) { WatermarkPage { page = it } }
+            SettingsPage.WM_TARGET -> Page("ADD WATERMARK TO", { page = SettingsPage.WATERMARK }) {
+                Group(footer = "Not in slow motion (120 and 240 fps): the camera writes those videos straight to the file.") {
+                    Watermark.TARGETS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmTarget == i, { AppSettings.wmTarget = i }) } }
+                }
+            }
+            SettingsPage.WM_SIZE -> Page("FONT SIZE", { page = SettingsPage.WATERMARK }) {
+                Group { Watermark.SIZES.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmSize == i, { AppSettings.wmSize = i }) } } }
+            }
+            SettingsPage.WM_POSITION -> Page("POSITION", { page = SettingsPage.WATERMARK }) {
+                Group { Watermark.POSITIONS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmPosition == i, { AppSettings.wmPosition = i }) } } }
+            }
+            SettingsPage.COMPOSITION -> Page("COMPOSITION ASSISTANCE", up) {
+                Group(footer = "Lines over the viewfinder to help you frame a picture. They are not saved in the photo.") {
+                    row { NavRow("Grid and guides", GridKind.of(AppSettings.gridKind).label) { page = SettingsPage.GRID } }
+                    row { SwitchRow("Level", AppSettings.composeLevel, { AppSettings.composeLevel = it }, "A line that tilts against the phone and turns mint when it is level.") }
+                }
+            }
+            SettingsPage.GRID -> Page("GRID AND GUIDES", { page = SettingsPage.COMPOSITION }) {
+                Group { GridKind.entries.forEachIndexed { i, kind -> row { RadioRow(kind.label, AppSettings.gridKind == i, { AppSettings.gridKind = i }) } } }
+            }
             SettingsPage.ORIENTATION -> Page("PHOTO ORIENTATION", up) {
                 Group(footer = "The screen always stays upright; this decides how the saved photo or video is turned.") {
                     row { RadioRow("Follow system", !AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = false }, "Photos and videos are saved upright for the screen.") }
@@ -157,6 +182,10 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         }
         row { NavRow("Formats") { open(SettingsPage.FORMATS) } }
     }
+    Group {
+        row { NavRow("Watermark", if (AppSettings.wmOn) "On" else "Off") { open(SettingsPage.WATERMARK) } }
+        row { NavRow("Composition assistance") { open(SettingsPage.COMPOSITION) } }
+    }
     if (refused) {
         BrandButton("OPEN PHONE SETTINGS", Modifier.fillMaxWidth()) {
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
@@ -185,5 +214,44 @@ private fun PhotoTab(open: (SettingsPage) -> Unit) {
         row { NavRow("Touch and hold shutter button", if (AppSettings.holdForBurst) "Burst" else "Off") { open(SettingsPage.HOLD) } }
         row { NavRow("Shooting methods", if (AppSettings.tapToCapture) "Tap to capture" else "Off") { open(SettingsPage.METHODS) } }
         row { NavRow("Lens focal length") { open(SettingsPage.LENS) } }
+    }
+}
+
+/** The watermark settings, as the stock page: on/off, where it goes, what it says, size and position. */
+@Composable
+private fun WatermarkPage(open: (SettingsPage) -> Unit) {
+    val model = Watermark.modelName(android.os.Build.MANUFACTURER, android.os.Build.MODEL)
+    var editing by remember { mutableStateOf(false) }
+    Group(footer = "A line of text in the corner of your photos and videos. It is part of the picture. In slow motion (120 and 240 fps) videos it is left out.") {
+        row { SwitchRow("Watermark", AppSettings.wmOn, { AppSettings.wmOn = it }) }
+    }
+    Group {
+        row { NavRow("Add watermark to", Watermark.TARGETS[AppSettings.wmTarget.coerceIn(0, 2)]) { open(SettingsPage.WM_TARGET) } }
+    }
+    Group {
+        row { SwitchRow("Shot on $model", AppSettings.wmShotOn, { AppSettings.wmShotOn = it }) }
+        row { SwitchRow("Location", AppSettings.wmLocation, { AppSettings.wmLocation = it }, "The last known place, as coordinates. Needs location tags to be on.") }
+        row { SwitchRow("Date and time", AppSettings.wmDate, { AppSettings.wmDate = it }) }
+        row { NavRow("Customised text", AppSettings.wmText.ifBlank { "None" }) { editing = true } }
+    }
+    Group {
+        row { NavRow("Font size", Watermark.SIZES[AppSettings.wmSize.coerceIn(0, 2)]) { open(SettingsPage.WM_SIZE) } }
+        row { NavRow("Position", Watermark.POSITIONS[AppSettings.wmPosition.coerceIn(0, 3)]) { open(SettingsPage.WM_POSITION) } }
+    }
+    if (editing) TextDialog("CUSTOMISED TEXT", AppSettings.wmText, { AppSettings.wmText = it.take(60); editing = false }) { editing = false }
+}
+
+/** A one-line text box in a brand dialog. */
+@Composable
+private fun TextDialog(title: String, initial: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+    var text by remember { mutableStateOf(initial) }
+    CbDialog(title, onDismiss, subtitle = "Up to 60 characters") {
+        androidx.compose.foundation.text.BasicTextField(
+            text, { text = it.take(60) }, Modifier.fillMaxWidth().background(DarkCb.surface2).padding(12.dp),
+            singleLine = true, textStyle = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = DarkCb.ink),
+            cursorBrush = androidx.compose.ui.graphics.SolidColor(DarkCb.mint),
+        )
+        BrandButton("SAVE", Modifier.fillMaxWidth(), primary = true, cb = DarkCb) { onSave(text) }
+        BrandButton("CANCEL", Modifier.fillMaxWidth(), cb = DarkCb, onClick = onDismiss)
     }
 }

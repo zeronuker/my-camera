@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -78,6 +79,14 @@ import com.claudeborne.camera.camera.MasterFormat
 import com.claudeborne.camera.camera.Pro
 import com.claudeborne.camera.camera.ProRules
 import com.claudeborne.camera.camera.Wb
+import com.claudeborne.camera.capture.PhotoEdit
+import com.claudeborne.camera.capture.Watermark
+import com.claudeborne.camera.capture.WatermarkSpec
+import com.claudeborne.camera.look.GridKind
+import com.claudeborne.camera.look.Look
+import com.claudeborne.camera.look.Scene
+import com.claudeborne.camera.look.Tilt
+import com.claudeborne.camera.look.TiltRules
 import com.claudeborne.camera.camera.ZoomStops
 import android.os.PowerManager
 import androidx.core.content.ContextCompat
@@ -120,7 +129,9 @@ private const val GALLERY = "com.claudeborne.gallerymanager"
 /** The volume keys, handed over by the activity while the viewfinder is on show. Returns true when it used the key. */
 internal object CameraKeys {
     var handler: ((up: Boolean, first: Boolean) -> Boolean)? = null
-    fun handles() = handler != null && AppSettings.volumeAction != 0
+    /** Underwater mode: wet fingers cannot touch the screen, so the volume keys are always the shutter. */
+    var forceShutter = false
+    fun handles() = handler != null && (forceShutter || AppSettings.volumeAction != 0)
 }
 
 /**
@@ -184,6 +195,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val masterFormat = MasterFormat.of(AppSettings.masterFormat)
     val wantRaw = isMaster && masterFormat.wantsRaw
     val effectivePro = (if (proMode) pro else Pro()).copy(faceMetering = isMaster && AppSettings.faceMetering)
+    var tilt by remember { mutableStateOf(Tilt()) }
+    val scene = if (mode == Mode.VIDEO) Scene.all[AppSettings.scene.coerceIn(0, Scene.all.lastIndex)] else Scene.all[0]
     var recorder by remember { mutableStateOf<VideoRecorder?>(null) }
     var recording by remember { mutableStateOf(false) }
     var recPaused by remember { mutableStateOf(false) }
@@ -200,6 +213,14 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var micAsk by remember { mutableStateOf<Boolean?>(null) } // null: closed, false: ask, true: Android no longer asks (settings)
     val leaveHooks = remember { arrayOf<() -> Unit>({}) } // 0: finish a recording when the screen goes
     fun say(text: String) { toast = text to ((toast?.second ?: 0) + 1) }
+    /** The watermark for a photo or video taken now, or null when it is off or does not apply. */
+    fun watermark(video: Boolean): WatermarkSpec? {
+        if (!AppSettings.wmOn || !Watermark.appliesTo(AppSettings.wmTarget, video)) return null
+        val place = if (AppSettings.wmLocation) LastLocation.get(context)?.let { Watermark.coordinates(it.latitude, it.longitude) } else null
+        val text = Watermark.text(AppSettings.wmShotOn, Watermark.modelName(android.os.Build.MANUFACTURER, android.os.Build.MODEL), place, if (AppSettings.wmDate) System.currentTimeMillis() else null, AppSettings.wmText)
+        return if (text.isEmpty()) null else WatermarkSpec(text, AppSettings.wmSize, AppSettings.wmPosition)
+    }
+    val watermarkNow by rememberUpdatedState(::watermark)
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
         permitted = ok
@@ -293,6 +314,16 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (caps == null || !Encoders.hasTenBit()) emptyList()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
     }
+    // the look: filter, Soft light and styles (Master), scenes (Video), Underwater and Tilt-shift; 120 and 240 fps video bypasses the GL pipeline, so it gets none
+    val lookFilterOk = !isMaster && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
+    val look = if (isVideo && picked?.highSpeed == true) Look.NONE else Look(
+        filter = if (lookFilterOk) AppSettings.filter.coerceIn(0, com.claudeborne.camera.look.Filters.all.lastIndex) else 0,
+        soft = if (mode == Mode.PHOTO || isMaster) AppSettings.softLight else 0,
+        tone = if (isMaster) AppSettings.styleTone else 0, sat = if (isMaster) AppSettings.styleSat else 0, warm = if (isMaster) AppSettings.styleWarm else 0,
+        tint = if (isMaster) AppSettings.styleTint else 0, sharp = if (isMaster) AppSettings.styleSharp else 0, vignette = isMaster && AppSettings.styleVignette,
+        underwater = mode == Mode.UNDERWATER, tilt = if (mode == Mode.TILTSHIFT) tilt else null,
+    ).withScene(scene)
+    val lookNow by rememberUpdatedState(look)
     val hdrNow = if (plainVideo && picked?.highSpeed != true) hdrChoices.firstOrNull { it.second == AppSettings.videoHdr }?.let { Hdr.entries[it.second - 1] } else null
     // the viewfinder always runs as a normal session; 120 and 240 fps switch to a high-speed session only while recording
     val setup = if (isVideo && caps != null && picked != null) {
@@ -314,6 +345,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     }
     // Pro: the manual choices go to the camera; the assistants go to the picture (screen only, never into a photo or video)
     LaunchedEffect(effectivePro) { engine.setPro(effectivePro) }
+    LaunchedEffect(look) { renderer.look = look; glView?.requestRender() }
+    LaunchedEffect(scene) { engine.setExposure(ev + scene.ev) }
+    LaunchedEffect(mode) { CameraKeys.forceShutter = mode == Mode.UNDERWATER }
     val mintGl = remember { floatArrayOf(DarkCb.mint.red, DarkCb.mint.green, DarkCb.mint.blue) }
     LaunchedEffect(proMode, AppSettings.peaking, AppSettings.zebra, mode, AppSettings.logProfile, AppSettings.lutPreview) {
         renderer.peaking = proMode && AppSettings.peaking
@@ -328,7 +362,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         onDispose { renderer.histogram = null }
     }
     // the level line: the phone's gravity, only while the line is on show
-    val levelOn = proMode && AppSettings.levelLine
+    val levelOn = (proMode && AppSettings.levelLine) || AppSettings.composeLevel
     DisposableEffect(levelOn, resumed) {
         val sensors = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
         val gravity = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_ACCELEROMETER)
@@ -347,7 +381,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             renderer.mirror = it.facing == Facing.FRONT
             renderer.bufferWidth = it.previewWidth
             renderer.bufferHeight = it.previewHeight
-            engine.setExposure(ev) // the camera was reopened: keep the exposure the user set
+            engine.setExposure(ev + scene.ev) // the camera was reopened: keep the exposure the user set
             engine.setFlash(flash)
             focusHeld = false
         }
@@ -371,7 +405,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             override fun onPhoto(photo: CameraEngine.Photo) {
                 screenFlash = false
                 val exif = if (photo.mirrored) PhotoRules.exifOrientation(photo.jpegOrientation, mirrored = true) else null
-                PhotoSaver.save(context, photo.bytes, photo.format, exif, photo.squareCrop, System.currentTimeMillis()) { result ->
+                val mark = if (photo.format == StillFormat.DNG) null else watermarkNow(false)
+                val edit = if (photo.format == StillFormat.DNG || (lookNow.isIdentity && mark == null)) null else PhotoEdit(lookNow, mark?.let { m -> { c, w, h -> Watermark.draw(c, w, h, m) } })
+                PhotoSaver.save(context, photo.bytes, photo.format, exif, photo.squareCrop, System.currentTimeMillis(), edit) { result ->
                     result.onSuccess { uri ->
                         AppSettings.rememberLastPhoto(uri.toString())
                         if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
@@ -436,7 +472,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val stops = ZoomStops.stops(wide)
     fun setEv(stops: Float) {
         ev = stops.coerceIn(-Ev.LIMIT, Ev.LIMIT)
-        engine.setExposure(ev)
+        engine.setExposure(ev + scene.ev)
     }
     // Pro controls: what the open camera allows, and the lists the dials step through
     val proCaps = info?.pro
@@ -609,7 +645,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 renderer.freeze() // the picture stays while the camera switches to its high-speed mode
                 engine.startHighSpeed(surface, o.fps) { ok -> renderer.unfreeze(); begin(ok) }
             } else {
-                renderer.startEncoding(PreviewRenderer.Encoding(surface, fw, fh, turn, isFront && AppSettings.mirrorSelfie, s.hdr != null, rec::gate, log = mode == Mode.PROVIDEO && AppSettings.logProfile), begin)
+                renderer.startEncoding(PreviewRenderer.Encoding(surface, fw, fh, turn, isFront && AppSettings.mirrorSelfie, s.hdr != null, rec::gate, log = mode == Mode.PROVIDEO && AppSettings.logProfile, overlay = watermark(true)?.let { Watermark.overlay(fw, fh, it) }), begin)
             }
         }
     }
@@ -762,7 +798,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     // volume keys: shutter, zoom, or the phone's volume
     DisposableEffect(Unit) {
         CameraKeys.handler = handler@{ up, first ->
-            when (AppSettings.volumeAction) {
+            when (if (CameraKeys.forceShutter) 1 else AppSettings.volumeAction) {
                 1 -> { if (first) shutterTap(); true }
                 2 -> { goTo(zoom + if (up) 0.5f else -0.5f); true }
                 else -> false
@@ -790,9 +826,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     },
                     onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d, shownModes)?.let(::selectMode) },
                     onLongPress = { pos -> if (menu == Menu.NONE) focus(pos, lock = true) },
-                    onZoom = { change -> zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true },
-                    onExposureDrag = { dy -> setEv(ev + dy / 150f) },
-                    dragEnabled = { focusPoint != null },
+                    onZoom = { change -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.resize(tilt, change) else { zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true } },
+                    onTwist = { deg -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.clamp(tilt.copy(angle = tilt.angle - deg)) },
+                    onExposureDrag = { dy -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.clamp(tilt.copy(centre = tilt.centre + dy / boxHeight.coerceAtLeast(1))) else setEv(ev + dy / 150f) },
+                    dragEnabled = { focusPoint != null || mode == Mode.TILTSHIFT },
                 )
             },
         )
@@ -807,6 +844,16 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (screenFlash) Box(Modifier.fillMaxSize().background(Color.White))
 
         if (permitted) {
+            // composition guides and the Tilt-shift band sit over the picture band (never in the saved file)
+            Box(Modifier.offset { androidx.compose.ui.unit.IntOffset(0, boxTop) }.fillMaxWidth().height(with(density) { boxHeight.toDp() })) {
+                val grid = GridKind.of(AppSettings.gridKind)
+                androidx.compose.animation.AnimatedVisibility(grid != GridKind.NONE, enter = androidx.compose.animation.fadeIn(tween(MOTION_MS)), exit = androidx.compose.animation.fadeOut(tween(MOTION_FAST_MS))) {
+                    GridOverlay(if (grid == GridKind.NONE) GridKind.GRID else grid, Modifier.fillMaxSize())
+                }
+                androidx.compose.animation.AnimatedVisibility(mode == Mode.TILTSHIFT, enter = androidx.compose.animation.fadeIn(tween(MOTION_MS)), exit = androidx.compose.animation.fadeOut(tween(MOTION_FAST_MS))) {
+                    TiltBand(tilt, Modifier.fillMaxSize())
+                }
+            }
             focusPoint?.let { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                 TopPill(
@@ -900,15 +947,19 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                             }
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
-                            Visible(!evOpen && !pinching && proOpen == null && (facing == Facing.BACK || isMaster), Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
-                                Row(Modifier.fillMaxWidth(), if (isMaster) Arrangement.SpaceBetween else Arrangement.Center, Alignment.CenterVertically) {
-                                    if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") })
+                            Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
+                                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                                    if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else Spacer(Modifier.size(44.dp)) // retouch goes here in a later phase
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->
                                         // the active button steps through the extra focal lengths (28 / 35 mm, 243 mm); the others jump
                                         if (pill.selected) ZoomStops.next(pill.index, zoom, wide, AppSettings.extra28, AppSettings.extra35, AppSettings.extra243)?.let(::goTo)
                                         else goTo(pill.stop)
                                     }
-                                    if (isMaster) Spacer(Modifier.size(44.dp)) // where the styles button of a later phase goes; keeps the lens pills centred
+                                    when {
+                                        isMaster -> LookButton(Icon.STYLES, menu == Menu.STYLES) { menu = Menu.STYLES; evOpen = false; proOpen = null; formatOpen = false }
+                                        lookFilterOk -> LookButton(Icon.FILTER, AppSettings.filter > 0) { menu = Menu.FILTERS; evOpen = false; proOpen = null; qualityOpen = false }
+                                        else -> Spacer(Modifier.size(44.dp))
+                                    }
                                 }
                             }
                         }
@@ -938,12 +989,18 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             }
                         }
                         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            if (shownModes.size > 1) ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode) else Spacer(Modifier.height(36.dp))
+                            if (shownModes.size > 1) ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode, onReselect = { m -> if (m == Mode.VIDEO) { menu = Menu.SCENES; evOpen = false; qualityOpen = false } }) else Spacer(Modifier.height(36.dp))
                         }
                     }
                 }
                 Visible(menu != Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
-                    if (isVideo) VideoMenuPanel(
+                    if (menu == Menu.FILTERS) Box(Modifier.padding(bottom = 16.dp)) {
+                        FilterPanel(AppSettings.filter) { AppSettings.filter = it; say(com.claudeborne.camera.look.Filters.all[it].name) }
+                    } else if (menu == Menu.STYLES) Box(Modifier.padding(bottom = 16.dp)) {
+                        StylesPanel(onChange = { glView?.requestRender() })
+                    } else if (menu == Menu.SCENES) Box(Modifier.padding(bottom = 16.dp)) {
+                        ScenesPanel(AppSettings.scene) { AppSettings.scene = it; menu = Menu.NONE; say("Scene: ${Scene.all[it].name}") }
+                    } else if (isVideo) VideoMenuPanel(
                         menu, showHdr = plainVideo && hdrChoices.isNotEmpty() && picked?.highSpeed != true && !recording, hdr = AppSettings.videoHdr,
                         showSteady = caps?.previewStabilisation == true && picked?.highSpeed != true && !recording, steady = AppSettings.ultraSteady, focusHeld = focusHeld,
                         onPage = { menu = it },
@@ -961,6 +1018,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onInterval = { intervalSec = it; menu = Menu.NONE; say(if (it == 0) "Interval shooting: Off" else "Interval: every $it s") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
+                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight,
+                        onSoft = { AppSettings.softLight = it; menu = Menu.NONE; say("Soft light: ${com.claudeborne.camera.look.SoftLight.label(it)}") },
                         master = isMaster, histogram = AppSettings.showHistogram, faceOk = proCaps?.faceDetect == true, face = AppSettings.faceMetering,
                         onHistogram = { AppSettings.showHistogram = !AppSettings.showHistogram; menu = Menu.NONE; say("Histogram: ${if (AppSettings.showHistogram) "On" else "Off"}") },
                         onFace = { AppSettings.faceMetering = !AppSettings.faceMetering; menu = Menu.NONE; say("Face metering: ${if (AppSettings.faceMetering) "On" else "Off"}") },

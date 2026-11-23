@@ -86,7 +86,7 @@ internal fun ProBar(chips: List<ProChip>, open: ProParam?, onTap: (ProParam) -> 
  * the left gives the control back to the camera. [index] is the chosen entry of [items], null when the camera decides.
  */
 @Composable
-internal fun StepDial(title: String, items: List<String>, index: Int?, onIndex: (Int) -> Unit, onAuto: () -> Unit, autoNote: String? = null) {
+internal fun StepDial(title: String, items: List<String>, index: Int?, onIndex: (Int) -> Unit, onAuto: () -> Unit, autoNote: String? = null, autoLabel: String = "AUTO") {
     val density = LocalDensity.current
     val stepPx = with(density) { 26.dp.toPx() }
     val last = (items.size - 1).coerceAtLeast(0)
@@ -99,7 +99,7 @@ internal fun StepDial(title: String, items: List<String>, index: Int?, onIndex: 
         Box(
             Modifier.padding(start = 10.dp).height(40.dp).clip(CircleShape).background(if (auto) DarkCb.mint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.14f)).clickable(enabled = !auto, onClick = onAuto).padding(horizontal = 12.dp),
             Alignment.Center,
-        ) { Text("AUTO", style = monoStyle(glide(auto, DarkCb.mint, Color.White), 1.sp).copy(fontSize = 12.sp)) }
+        ) { Text(autoLabel, style = monoStyle(glide(auto, DarkCb.mint, Color.White), 1.sp).copy(fontSize = 12.sp)) }
         Column(
             Modifier.weight(1f).pointerInput(items.size) {
                 detectHorizontalDragGestures { _, dx ->

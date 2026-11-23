@@ -69,6 +69,8 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     SLOMO("SLO-MO", VideoStyle.SLOMO),
     TIMELAPSE("TIME-LAPSE", VideoStyle.TIMELAPSE),
     PROVIDEO("PRO VIDEO", VideoStyle.NORMAL),
+    TILTSHIFT("TILT-SHIFT", null),
+    UNDERWATER("UNDERWATER", null),
     ;
 
     val isVideo get() = style != null
@@ -83,7 +85,7 @@ private val GlassFill = Color.Black.copy(alpha = 0.42f)
 
 /** The mode names under the shutter: tap one, or swipe along the strip. A pill glides under the chosen name. */
 @Composable
-internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit) {
+internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit, onReselect: (Mode) -> Unit = {}) {
     val density = LocalDensity.current
     val spots = remember { mutableStateMapOf<Int, Pair<Float, Float>>() } // left edge and width of each name, in pixels
     val spot = spots[selected.ordinal]
@@ -119,7 +121,7 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
             Row(Modifier.height(36.dp)) {
                 shown.forEach { m ->
                     Box(
-                        Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled && m != selected) { onSelect(m) }
+                        Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled) { if (m == selected) onReselect(m) else onSelect(m) }
                             .onGloballyPositioned { spots[m.ordinal] = it.positionInParent().x - with(density) { 14.dp.toPx() } to it.size.width + with(density) { 28.dp.toPx() } },
                         Alignment.Center,
                     ) { Text(m.label, maxLines = 1, softWrap = false, style = monoStyle(glide(m == selected, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp)) }

@@ -17,6 +17,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.calculateRotation
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -70,7 +71,7 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /** Which page of the 6-dot menu is open. */
-internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR }
+internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR, SOFT, FILTERS, STYLES, SCENES }
 
 private val Glass = Color.Black.copy(alpha = 0.42f)
 
@@ -85,6 +86,7 @@ internal suspend fun PointerInputScope.cameraGestures(
     onExposureDrag: (Float) -> Unit, // pixels, positive = up
     dragEnabled: () -> Boolean,
     onSwipe: (Int) -> Unit = {}, // -1 left, 1 right: a sideways swipe of a finger that is not setting the exposure
+    onTwist: (Float) -> Unit = {}, // degrees, two fingers turning (Tilt-shift)
 ) = awaitEachGesture {
     val down = awaitFirstDown(requireUnconsumed = false)
     val slop = viewConfiguration.touchSlop
@@ -115,6 +117,8 @@ internal suspend fun PointerInputScope.cameraGestures(
         if (event.changes.size > 1) {
             twoFingers = true
             val zoom = event.calculateZoom()
+            val turn = event.calculateRotation()
+            if (turn != 0f) onTwist(turn)
             if (zoom != 1f) { onZoom(zoom); event.changes.forEach { it.consume() } }
         } else if (dragEnabled()) {
             val dy = event.changes[0].positionChange().y
@@ -221,17 +225,20 @@ internal fun MenuPanel(
     modifier: Modifier = Modifier, showSettings: Boolean = true,
     /** Master mode adds Histogram and Face metering (the latter only where the camera can find faces). */
     master: Boolean = false, histogram: Boolean = false, faceOk: Boolean = false, face: Boolean = false, onHistogram: () -> Unit = {}, onFace: () -> Unit = {},
+    /** Photo's menu has Soft light (Master has it among the styles). */
+    showSoft: Boolean = false, soft: Int = 0, onSoft: (Int) -> Unit = {},
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
         AnimatedContent(menu, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "menu") { page ->
             when (page) {
-                Menu.MAIN, Menu.NONE -> if (master) {
-                    // the stock Master menu: a grid of four columns, Aspect ratio, Timer, Histogram, Face metering, Interval shooting, Settings
+                Menu.MAIN, Menu.NONE -> {
+                    // a grid of four columns, as the stock menus
                     val items = buildList<@Composable () -> Unit> {
                         add { MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) } }
+                        if (showSoft) add { MenuItem(Icon.SOFT_LIGHT, "Soft light", soft > 0) { onPage(Menu.SOFT) } }
                         add { MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) } }
-                        add { MenuItem(Icon.HISTOGRAM, "Histogram", histogram, onHistogram) }
-                        if (faceOk) add { MenuItem(Icon.FACE_METERING, "Face metering", face, onFace) }
+                        if (master) add { MenuItem(Icon.HISTOGRAM, "Histogram", histogram, onHistogram) }
+                        if (master && faceOk) add { MenuItem(Icon.FACE_METERING, "Face metering", face, onFace) }
                         add { MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) } }
                         if (showSettings) add { MenuItem(Icon.GEAR, "Settings", false, onSettings) }
                     }
@@ -243,11 +250,6 @@ internal fun MenuPanel(
                             }
                         }
                     }
-                } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
-                    MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) }
-                    MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) }
-                    MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) }
-                    if (showSettings) MenuItem(Icon.GEAR, "Settings", false, onSettings)
                 }
                 Menu.ASPECT -> MenuPage("ASPECT RATIO", { onPage(Menu.MAIN) }) {
                     Aspect.entries.forEach { Choice(it.label, it == aspect) { onAspect(it) } }
@@ -258,7 +260,10 @@ internal fun MenuPanel(
                 Menu.INTERVAL -> MenuPage("INTERVAL SHOOTING", { onPage(Menu.MAIN) }) {
                     listOf(0, 3, 5, 10).forEach { Choice(if (it == 0) "Off" else "$it s", it == intervalSec) { onInterval(it) } }
                 }
-                Menu.HDR -> Unit // the video menu's page, see VideoMenuPanel
+                Menu.SOFT -> MenuPage("SOFT LIGHT", { onPage(Menu.MAIN) }) {
+                    listOf(0, 3, 6, 9).forEach { Choice(com.claudeborne.camera.look.SoftLight.label(it), it == soft) { onSoft(it) } }
+                }
+                Menu.HDR, Menu.FILTERS, Menu.STYLES, Menu.SCENES -> Unit // pages of other panels
             }
         }
     }

@@ -85,6 +85,32 @@ object Settings {
     var lutPreview by Pref("lutPreview", true) // Pro video: show the normal look on screen while the file is flat
     var shutterAngle by Pref("shutterAngle", false) // Pro video: show the shutter as an angle instead of 1/x
 
+    // Looks (Phase 5)
+    var filter by Pref("filter", 0) // index into Filters.all; 0 = Original
+    var softLight by Pref("softLight", 0) // 0..9
+    var styleTone by Pref("styleTone", 0)
+    var styleSat by Pref("styleSat", 0)
+    var styleWarm by Pref("styleWarm", 0)
+    var styleTint by Pref("styleTint", 0)
+    var styleSharp by Pref("styleSharp", 0)
+    var styleVignette by Pref("styleVignette", false) // stock default is On (the phone's own lens look, which an app cannot switch); here it is a gentle corner darkening and starts Off so a plain Master photo stays untouched
+    var stylePage by Pref("stylePage", 0)
+    var scene by Pref("scene", 0) // index into Scene.all, used in Video
+
+    // Composition assistance
+    var gridKind by Pref("gridKind", 0) // 0 none, 1 grid, 2 diagonal lines, 3 golden spiral
+    var composeLevel by Pref("composeLevel", false)
+
+    // Watermark
+    var wmOn by Pref("wmOn", false)
+    var wmTarget by Pref("wmTarget", 2) // 0 photos, 1 videos, 2 photos and videos
+    var wmShotOn by Pref("wmShotOn", true)
+    var wmLocation by Pref("wmLocation", false)
+    var wmDate by Pref("wmDate", false)
+    var wmText by Pref("wmText", "")
+    var wmSize by Pref("wmSize", 1) // 0 small, 1 medium, 2 large
+    var wmPosition by Pref("wmPosition", 0) // 0 bottom, 1 bottom left, 2 bottom right, 3 top
+
     var lastPhotoUri by Pref("lastPhotoUri", "")
     var lastIsVideo by Pref("lastIsVideo", false)
 

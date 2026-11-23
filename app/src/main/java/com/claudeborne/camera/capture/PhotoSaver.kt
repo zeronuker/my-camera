@@ -15,8 +15,14 @@ import android.util.Size
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.setValue
+import android.graphics.Canvas
+import com.claudeborne.camera.gl.PhotoLook
+import com.claudeborne.camera.look.Look
 import java.io.File
 import java.util.concurrent.Executors
+
+/** What to burn into a saved photo: a look (filter, Soft light, style...) and/or an [overlay] such as the watermark. */
+class PhotoEdit(val look: Look, val overlay: ((Canvas, Int, Int) -> Unit)?)
 
 /**
  * Writes photos to `DCIM/Camera` through MediaStore. It runs on its own thread and holds no screen, so a photo still being
@@ -39,12 +45,15 @@ object PhotoSaver {
         true // cannot tell: try; a failed write is reported on its own
     }
 
-    /** [exifOrientation] is written into the file only for mirrored selfies (everything else the camera tags itself). */
-    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, done: (Result<Uri>) -> Unit) {
+    /**
+     * [exifOrientation] is written into the file only for mirrored selfies (everything else the camera tags itself). [edit] is a look
+     * and/or a watermark to burn into the picture: the file is then a plain JPEG (an Ultra HDR gain map or HEIF cannot survive that).
+     */
+    fun save(context: Context, bytes: ByteArray, format: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit? = null, done: (Result<Uri>) -> Unit) {
         val app = context.applicationContext
         saving++
         io.execute {
-            val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs) }
+            val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs, edit) }
             main.post {
                 saving--
                 done(result)
@@ -52,12 +61,15 @@ object PhotoSaver {
         }
     }
 
-    private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long): Uri {
+    private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long, edit: PhotoEdit?): Uri {
         // the 1:1 shape is cut out of the 4:3 photo; that makes a plain JPEG (an Ultra HDR file loses its gain map when re-encoded)
         val raw = wanted == StillFormat.DNG // a DNG is written as it is: no crop, the turn is already inside it
-        val format = if (squareCrop && !raw) StillFormat.JPEG else wanted
+        // a look or watermark: the same effect shader as the viewfinder, on the finished photo; null (any problem) keeps the camera's own file
+        val edited = if (!raw && edit != null) edited(context, bytes, exifOrientation, squareCrop, edit) else null
+        val format = if ((squareCrop || edited != null) && !raw) StillFormat.JPEG else wanted
         val data = when {
             raw -> bytes
+            edited != null -> edited
             squareCrop -> squared(context, bytes, exifOrientation)
             exifOrientation != null -> withOrientation(context, bytes, exifOrientation)
             else -> bytes
@@ -79,6 +91,41 @@ object PhotoSaver {
             throw e
         }
         return uri
+    }
+
+    /** The photo with its look and watermark burned in, turned upright, with the camera's tags (time, place, make) copied over; null when it could not be done. */
+    private fun edited(context: Context, bytes: ByteArray, exifOrientation: Int?, squareCrop: Boolean, edit: PhotoEdit): ByteArray? {
+        val tag = exifOrientation ?: runCatching { ExifInterface(bytes.inputStream()).getAttributeInt(ExifInterface.TAG_ORIENTATION, 1) }.getOrDefault(1)
+        val processed = PhotoLook.process(bytes, tag, edit.look, squareCrop, edit.overlay) ?: return null
+        val dir = File(context.cacheDir, "share").apply { mkdirs() }
+        val source = dir.resolve("edit-in.jpg")
+        val target = dir.resolve("edit-out.jpg")
+        return try {
+            source.writeBytes(bytes)
+            target.writeBytes(processed)
+            val from = ExifInterface(source.path)
+            ExifInterface(target.path).apply {
+                copyTags(from, this)
+                setAttribute(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL.toString()) // already turned upright
+                saveAttributes()
+            }
+            target.readBytes()
+        } catch (_: Exception) {
+            processed // the picture is fine without its tags
+        } finally {
+            source.delete()
+            target.delete()
+        }
+    }
+
+    private fun copyTags(from: ExifInterface, to: ExifInterface) {
+        val kept = listOf(
+            ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL, ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL,
+            ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF, ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
+            ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF, ExifInterface.TAG_GPS_DATESTAMP, ExifInterface.TAG_GPS_TIMESTAMP,
+            ExifInterface.TAG_GPS_PROCESSING_METHOD,
+        )
+        for (tag in kept) from.getAttribute(tag)?.let { to.setAttribute(tag, it) }
     }
 
     private fun withOrientation(context: Context, bytes: ByteArray, orientation: Int): ByteArray {
@@ -108,13 +155,7 @@ object PhotoSaver {
             target.outputStream().use { cut.compress(Bitmap.CompressFormat.JPEG, 97, it) }
             val from = ExifInterface(source.path)
             ExifInterface(target.path).apply {
-                val kept = listOf(
-                    ExifInterface.TAG_DATETIME, ExifInterface.TAG_DATETIME_ORIGINAL, ExifInterface.TAG_MAKE, ExifInterface.TAG_MODEL,
-                    ExifInterface.TAG_GPS_LATITUDE, ExifInterface.TAG_GPS_LATITUDE_REF, ExifInterface.TAG_GPS_LONGITUDE, ExifInterface.TAG_GPS_LONGITUDE_REF,
-                    ExifInterface.TAG_GPS_ALTITUDE, ExifInterface.TAG_GPS_ALTITUDE_REF, ExifInterface.TAG_GPS_DATESTAMP, ExifInterface.TAG_GPS_TIMESTAMP,
-                    ExifInterface.TAG_GPS_PROCESSING_METHOD,
-                )
-                for (tag in kept) from.getAttribute(tag)?.let { setAttribute(tag, it) }
+                copyTags(from, this)
                 setAttribute(ExifInterface.TAG_ORIENTATION, (orientation ?: from.getAttributeInt(ExifInterface.TAG_ORIENTATION, 1)).toString())
                 saveAttributes()
             }

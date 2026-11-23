@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK, HISTOGRAM, FACE_METERING }
+enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK, HISTOGRAM, FACE_METERING, FILTER, STYLES, SOFT_LIGHT }
 
 /** Line icons drawn on a 24 x 24 grid, so the app needs no icon library and they match the brand's thin outlines. */
 @Composable
@@ -261,6 +261,19 @@ fun CbIcon(icon: Icon, color: Color, modifier: Modifier = Modifier, filled: Bool
                 drawCircle(color, 1.8f * k, p(12f, 12f))
             }
             Icon.CHECK -> shape(Path().apply { moveTo(5f * k, 12.5f * k); lineTo(10f * k, 17.5f * k); lineTo(19f * k, 7f * k) })
+            Icon.FILTER -> { // two overlapping rings, as the stock filters button
+                drawCircle(color, 6.5f * k, p(9.5f, 10f), style = line)
+                drawCircle(color, 6.5f * k, p(14.5f, 14f), style = line)
+            }
+            Icon.STYLES -> { // stacked cards
+                round(8f, 3.5f, 11f, 14f, 2f)
+                shape(poly(false, 5f, 7f, 5f, 18f, 6.5f, 19.5f, 14f, 19.5f))
+            }
+            Icon.SOFT_LIGHT -> {
+                drawCircle(color, 3.6f * k, p(12f, 12f))
+                drawCircle(color, 7.2f * k, p(12f, 12f), style = line)
+                drawCircle(color, 10.2f * k, p(12f, 12f), style = Stroke(1f * k))
+            }
             Icon.HISTOGRAM -> {
                 round(3f, 4f, 18f, 16f, 2.5f)
                 shape(poly(false, 5.5f, 17f, 8.5f, 17f, 10.5f, 9f, 12.5f, 14f, 14f, 11f, 15.5f, 17f, 18.5f, 17f))
