@@ -170,6 +170,8 @@ class PreviewRenderer(
         val ok = try { target = openTarget(e); e.overlay?.let(::uploadOverlay); true } catch (_: Exception) { closeTarget(); false }
         if (ok) encoding = e
         ready(ok)
+        // a frame that arrived before the encoder was set is still waiting (the screen no longer takes frames while an encoder runs): take it, or the camera stalls
+        if (ok && pending.get() > 0) encodeFrame(e)
     }
 
     /** Starts drawing every frame to a second encoder too (the Live photo clip); works with or without a recording. [ready] runs on the GL thread. */
@@ -177,6 +179,7 @@ class PreviewRenderer(
         val ok = try { clipTarget = openTarget(e); true } catch (_: Exception) { clipTarget?.let(::destroy); clipTarget = null; false }
         if (ok) clip = e
         ready(ok)
+        if (ok && pending.get() > 0) encodeFrame(encoding ?: e)
         requestRender()
     }
 

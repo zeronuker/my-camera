@@ -46,6 +46,8 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
          */
         val direct: Boolean = false,
         val orientationHint: Int = 0,
+        /** Put before ".mp4" in the file name (Dual view with two files: "_REAR", "_FRONT"). */
+        val nameSuffix: String = "",
     )
 
     interface Listener {
@@ -111,7 +113,7 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
 
     /** Creates the file, the encoders and the input surface. Throws only what [start] callers catch (see [Result]). */
     fun prepare(): Result<Surface> = runCatching {
-        val name = VideoRules.fileName(System.currentTimeMillis())
+        val name = VideoRules.fileName(System.currentTimeMillis()).replace(".mp4", cfg.nameSuffix + ".mp4")
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, name)
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")

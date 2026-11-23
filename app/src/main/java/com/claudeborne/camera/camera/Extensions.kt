@@ -18,6 +18,17 @@ object Extensions {
         false
     }
 
+    /** True when the phone lists a rear and the front camera as a concurrent pair (Dual view). */
+    fun dualViewAvailable(context: Context): Boolean = try {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        manager.concurrentCameraIds.any { pair ->
+            pair.any { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK } &&
+                pair.any { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT }
+        }
+    } catch (_: Exception) {
+        false
+    }
+
     /** True when a rear camera zooms below 1x, i.e. has an ultra wide view whose edges stretch faces. */
     fun ultraWideAvailable(context: Context): Boolean = try {
         val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager

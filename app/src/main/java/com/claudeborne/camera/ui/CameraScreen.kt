@@ -230,6 +230,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var pipDragging by remember { mutableStateOf(false) }
     var quadRear by remember { mutableIntStateOf(minOf(3, multiCams?.physical?.size ?: 0)) }
     var multiReady by remember { mutableStateOf(false) }
+    var recorderB by remember { mutableStateOf<VideoRecorder?>(null) } // Dual view with separate files: the front camera's recorder
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
     var ring by remember { mutableStateOf<ClipRing?>(null) } // Live photo: the clip encoder that runs while it is on
     var liveClip by remember { mutableStateOf<Deferred<ByteArray?>?>(null) } // the clip for the photo being taken
@@ -970,6 +971,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         } else {
             r.stop(renderer)
         }
+        recorderB?.let { b -> recorderB = null; renderer.stopClip { }; b.stop(null) }
         note?.let(::say)
     }
     leaveHooks[0] = { stopRecording("Recording stopped. Your video is saved.") }
@@ -1057,12 +1059,96 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
 
+    /** Dual view: records the composite as one file, or the rear and the front camera as two files, from the same GL frames. */
+    fun beginDualRecording() {
+        if (!multiReady || recording || savingVideo) return
+        if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
+        if (!PhotoSaver.hasRoom(200L * 1024 * 1024)) return say("Storage is full")
+        val separate = AppSettings.dualSeparate && mode == Mode.DUAL
+        // 1080 wide when an encoder can do it, else 720 wide
+        // (a debuggable build, i.e. the emulator with its software GL, only tries 720 so a test finishes)
+        val tries = if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) listOf(com.claudeborne.camera.video.Res.R720) else listOf(com.claudeborne.camera.video.Res.R1080, com.claudeborne.camera.video.Res.R720)
+        val res = tries.firstOrNull { Encoders.codecFor(AppSettings.hevc, it, 30) != null }
+            ?: return say("This phone cannot record this video size")
+        val hevc = Encoders.codecFor(AppSettings.hevc, res, 30) == true
+        val place = if (AppSettings.locationTags) LastLocation.get(context) else null
+        // combined: the whole picture, 9:16; separate: each camera whole, 3:4
+        val fw = res.height
+        val fh = if (separate) fw * 4 / 3 else res.width
+        val bitrate = VideoRules.bitrate(fw, fh, 30, hevc, AppSettings.bitrateHigh, false, Encoders.maxBitrate(hevc))
+        fun config(suffix: String) = VideoRecorder.Config(fw, fh, 30, 30, hevc, null, bitrate, true, VideoStyle.NORMAL, AppSettings.lapseSpeed, false, place, nameSuffix = suffix)
+        val a = VideoRecorder(context.applicationContext, config(if (separate) "_REAR" else ""), object : VideoRecorder.Listener {
+            override fun onFinished(uri: Uri?, error: String?) {
+                savingVideo = false
+                recorder = null
+                if (uri != null) {
+                    AppSettings.rememberLast(uri.toString(), true)
+                    if (launchNow.secure) sessionShots.add(SessionShot(uri, true))
+                    scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                    say(error ?: if (separate) "Two videos saved" else "Video saved")
+                } else if (error != null) say(error)
+            }
+
+            override fun onProblem(message: String) { scope.launch { stopRecording("$message. Your video is saved.") } }
+        })
+        val b = if (separate) VideoRecorder(context.applicationContext, config("_FRONT"), object : VideoRecorder.Listener {
+            override fun onFinished(uri: Uri?, error: String?) { if (uri == null && error != null) say(error) }
+            override fun onProblem(message: String) { scope.launch { stopRecording("$message. Your videos are saved.") } }
+        }) else null
+        recorder = a
+        recOption = null
+        recTurn = 0
+        recSize = fw to fh
+        recHdr = false
+        recDirect = false
+        recMs = 0
+        savingVideo = true
+        scope.launch {
+            val madeA = withContext(Dispatchers.IO) { a.prepare() }
+            val madeB = if (b != null) withContext(Dispatchers.IO) { b.prepare() } else null
+            val surfaceA = madeA.getOrNull()
+            val surfaceB = madeB?.getOrNull()
+            if (surfaceA == null || (b != null && surfaceB == null)) {
+                a.cancel(); b?.cancel()
+                savingVideo = false; recorder = null
+                val why = (madeA.exceptionOrNull() ?: madeB?.exceptionOrNull())?.let { it.toString() + " " + it.stackTraceToString().take(600) }.orEmpty()
+                android.util.Log.w("DualRecord", "prepare failed: $why")
+                return@launch say(if (why.contains("microphone")) "The microphone could not start" else "The video could not start")
+            }
+            val begin = { ok: Boolean ->
+                if (ok) {
+                    a.start(); b?.start()
+                    recorderB = b
+                    if (AppSettings.shutterSound) sound.play(MediaActionSound.START_VIDEO_RECORDING)
+                    savingVideo = false
+                    recording = true
+                } else {
+                    a.cancel(); b?.cancel()
+                    savingVideo = false; recorder = null
+                    say("The video encoder could not start")
+                }
+            }
+            val mark = watermark(true)?.let { Watermark.overlay(fw, fh, it) }
+            renderer.startEncoding(PreviewRenderer.Encoding(surfaceA, fw, fh, 0, false, false, a::gate, overlay = mark, source = if (separate) 0 else -1)) { ok ->
+                if (!ok || b == null || surfaceB == null) begin(ok)
+                else renderer.startClip(PreviewRenderer.Encoding(surfaceB, fw, fh, 0, AppSettings.mirrorSelfie, false, b::gate, source = 1)) { okB ->
+                    if (!okB) { renderer.stopEncoding { }; begin(false) } else begin(true)
+                }
+            }
+        }
+    }
+
     /** Record button: asks for the microphone first when the video has sound, then starts or stops the recording. */
     fun recordTap() {
         menu = Menu.NONE
         evOpen = false
         qualityOpen = false
         if (recording) return stopRecording()
+        if (multi) {
+            if (!multiReady || savingVideo) return
+            if (!hasMic(context)) { askMic.launch(Manifest.permission.RECORD_AUDIO); return }
+            return beginDualRecording()
+        }
         if (savingVideo || engine.state != CameraEngine.State.Streaming) return
         recOption = null
         if (mode.style == VideoStyle.NORMAL && !hasMic(context)) { askMic.launch(Manifest.permission.RECORD_AUDIO); return }
@@ -1508,16 +1594,16 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             }
                         }
                         Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                            val normal = mode.style == VideoStyle.NORMAL
+                            val normal = mode.style == VideoStyle.NORMAL || multi
                             Crossfade(recording && normal && !recHdr, animationSpec = tween(MOTION_FAST_MS), label = "left slot") { snap ->
-                                if (snap) RoundButton(size = 52, onClick = ::snapshot) { CbIcon(Icon.CAMERA, Color.White, size = 26.dp) }
+                                if (snap) RoundButton(size = 52, onClick = { if (multi) dualPhoto() else snapshot() }) { CbIcon(Icon.CAMERA, Color.White, size = 26.dp) }
                                 else Thumbnail(thumb, PhotoSaver.saving > 0 || savingVideo, ::openLast)
                             }
                             Box(contentAlignment = Alignment.Center) {
-                                if (isVideo) {
+                                if (multi) {
+                                    RecordButton(recording, enabled = multiReady && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
+                                } else if (isVideo) {
                                     RecordButton(recording, enabled = state == CameraEngine.State.Streaming && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
-                                } else if (multi) {
-                                    Shutter(enabled = multiReady, running = false, onTap = ::dualPhoto, onHoldStart = {}, onHoldEnd = {})
                                 } else {
                                     Shutter(
                                         enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
@@ -1526,9 +1612,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }
                             }
-                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO || multi) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
+                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO) 2 else if (multi) 3 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
                                 when (slot) {
                                     0 -> RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
+                                    3 -> RoundButton(size = 52, onClick = ::dualPhoto) { CbIcon(Icon.CAMERA, Color.White, size = 26.dp) }
                                     1 -> RoundButton(size = 52, onClick = ::togglePause) { CbIcon(if (recPaused) Icon.PLAY else Icon.PAUSE, if (recPaused) DarkCb.mint else Color.White, size = 26.dp) }
                                     else -> Spacer(Modifier.size(52.dp))
                                 }

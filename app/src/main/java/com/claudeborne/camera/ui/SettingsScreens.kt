@@ -37,7 +37,7 @@ import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
@@ -131,6 +131,12 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                     row { RadioRow("High quality", AppSettings.bitrateHigh, { AppSettings.bitrateHigh = true }) }
                 }
             }
+            SettingsPage.DUAL_REC -> Page("DUAL-VIEW RECORDING", up) {
+                Group(footer = "Combined: one video of the whole picture, as you see it. Separate files: one video of the rear camera and one of the front camera, recorded together.") {
+                    row { RadioRow("Combined", !AppSettings.dualSeparate, { AppSettings.dualSeparate = false }) }
+                    row { RadioRow("Separate files", AppSettings.dualSeparate, { AppSettings.dualSeparate = true }) }
+                }
+            }
             SettingsPage.WATERMARK -> Page("WATERMARK", up) { WatermarkPage { page = it } }
             SettingsPage.WM_TARGET -> Page("ADD WATERMARK TO", { page = SettingsPage.WATERMARK }) {
                 Group(footer = "Not in slow motion (120 and 240 fps): the camera writes those videos straight to the file.") {
@@ -216,11 +222,13 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
 
 @Composable
 private fun VideoTab(open: (SettingsPage) -> Unit) {
+    val dualOk = com.claudeborne.camera.camera.Extensions.dualViewAvailable(LocalContext.current)
     Group(footer = "Videos are recorded with the sound of the microphone (not in slo-mo and time-lapse) and saved in DCIM/Camera.") {
         row { SwitchRow("Lock lens", AppSettings.lockLens, { AppSettings.lockLens = it }, "Do not automatically change lenses while recording videos.") }
         row { SwitchRow("Lock white balance", AppSettings.lockWb, { AppSettings.lockWb = it }, "Do not automatically adjust white balance while recording videos.") }
         row { NavRow("Adaptive frame rate", ADAPTIVE[AppSettings.adaptiveFps.coerceIn(0, 2)]) { open(SettingsPage.ADAPTIVE) } }
         row { NavRow("Bitrate", if (AppSettings.bitrateHigh) "High quality" else "Standard") { open(SettingsPage.BITRATE) } }
+        if (dualOk) row { NavRow("Dual-view recording", if (AppSettings.dualSeparate) "Separate files" else "Combined") { open(SettingsPage.DUAL_REC) } }
         row { SwitchRow("Depth of field (test)", AppSettings.videoDof, { AppSettings.videoDof = it }, "Blurs the background behind a person while you film, in the preview and in the file. Rear camera, normal video (not 120 or 240 fps). The person is found 8 times a second, so quick movements lag a little.") }
         row { SwitchRow("Motion Photo", AppSettings.videoMotion, { AppSettings.videoMotion = it }, "A photo taken while recording also saves a short moving clip around it. Rear camera, portrait videos at 30 or 60 fps, not 10-bit HDR.") }
     }
