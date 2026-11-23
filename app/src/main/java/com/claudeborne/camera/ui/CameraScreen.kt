@@ -230,6 +230,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var pipDragging by remember { mutableStateOf(false) }
     var quadRear by remember { mutableIntStateOf(minOf(3, multiCams?.physical?.size ?: 0)) }
     var multiReady by remember { mutableStateOf(false) }
+    var quadOk by remember { mutableStateOf(true) } // Quad view drops out of the strip for this run once even 2 rear cameras and the front are too slow
     var recorderB by remember { mutableStateOf<VideoRecorder?>(null) } // Dual view with separate files: the front camera's recorder
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
     var ring by remember { mutableStateOf<ClipRing?>(null) } // Live photo: the clip encoder that runs while it is on
@@ -401,9 +402,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
         onDispose { val old = r; if (old != null) { ring = null; renderer.stopClip { old.release() } } }
     }
-    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
+    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk, quadOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (multiCams?.physical?.size ?: 0) >= 2 }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (quadOk && (multiCams?.physical?.size ?: 0) >= 2) }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -476,6 +477,34 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     }
                 }
             }, { text -> scope.launch { say("$text. The normal camera is back."); mode = Mode.PHOTO } })
+        }
+    }
+    // Quad view must stream smoothly (about 30 fps in every tile) and stay cool: watch the real frame rate of each camera and the phone heat, and step down
+    // (3 rear cameras and the front, then 2 and the front, then not at all) rather than show a stuttering or hot picture
+    LaunchedEffect(multiReady, mode, quadRear) {
+        if (mode != Mode.QUAD || !multiReady) return@LaunchedEffect
+        renderer.resetFrameCounts()
+        val begin = android.os.SystemClock.elapsedRealtime()
+        while (true) {
+            delay(1000)
+            val seconds = (android.os.SystemClock.elapsedRealtime() - begin) / 1000f
+            val slow = DualRules.tooSlow(renderer.frameCounts().take(quadRear + 1), seconds, 24f)
+            val hot = heat != Heat.OK
+            if (!slow && !hot) { if (seconds > 20f) break else continue } // smooth for 20 seconds: stop looking, the heat check goes on below
+            if (recording) continue // never reopen the cameras under a recording
+            val lower = DualRules.stepDown(quadRear)
+            val why = if (hot) "The phone is getting hot" else "Quad view runs slowly here"
+            if (lower != null) { say("$why. Showing $lower rear cameras and the front."); quadRear = lower }
+            else { say("$why. Quad view is switched off."); quadOk = false; mode = Mode.PHOTO }
+            return@LaunchedEffect
+        }
+        while (true) { // after the first seconds only the heat matters
+            delay(3000)
+            if (heat == Heat.OK || recording) continue
+            val lower = DualRules.stepDown(quadRear)
+            if (lower != null) { say("The phone is getting hot. Showing $lower rear cameras and the front."); quadRear = lower }
+            else { say("The phone is getting hot. Quad view is switched off."); quadOk = false; mode = Mode.PHOTO }
+            return@LaunchedEffect
         }
     }
     // leaving Dual / Quad view: the cameras are released and the extra textures dropped; the normal camera reopens by itself
