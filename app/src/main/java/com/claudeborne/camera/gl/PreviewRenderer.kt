@@ -64,6 +64,13 @@ class PreviewRenderer(
     /** What is done to the picture besides showing it (filter, Soft light, style, tilt-shift...): live picture, video and snapshot alike. */
     @Volatile var look: Look = Look.NONE
     private var lutTex = 0
+    private var maskTex = 0
+    @Volatile private var maskReady = false
+    /** Video depth of field: blur the background where the person mask says "background". The mask comes from [maskSink]'s consumer through [setMask]. */
+    @Volatile var dof = false
+    @Volatile var dofRadius = 0.03f
+    @Volatile var maskSink: ((ByteArray, Int, Int) -> Unit)? = null
+    private var maskAt = 0L
     private var overlayProgram = 0
     private var overlayTex = 0
     private var lutFilter = -1
@@ -176,6 +183,7 @@ class PreviewRenderer(
         histFbo = 0
         histW = 0
         lutFilter = -1
+        maskReady = false
         pending.set(0)
         oesProgram = program(VERTEX, OES_FRAGMENT)
         plainProgram = program(VERTEX, PLAIN_FRAGMENT)
@@ -198,6 +206,15 @@ class PreviewRenderer(
         GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
         GLES20.glGenFramebuffers(1, ids, 3)
         holdFbo = ids[3]
+        GLES20.glGenTextures(1, ids, 0) // the person mask: a white pixel until the first real one arrives
+        maskTex = ids[0]
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, 1, 1, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(byteArrayOf(-1)))
         val st = SurfaceTexture(oesTexture)
         st.setOnFrameAvailableListener {
             pending.incrementAndGet()
@@ -231,6 +248,7 @@ class PreviewRenderer(
         drawScreen()
         maybeHistogram()
         maybeAnalysis()
+        maybeMask()
     }
 
     private fun drawScreen() {
@@ -426,7 +444,7 @@ class PreviewRenderer(
     /** Draws the current camera frame. [assist] adds the Pro assistants (screen only); [log] applies the flat log look. */
     private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false, plain: Boolean = false) {
         GLES20.glUseProgram(oesProgram)
-        applyLook(outW, outH, if (plain) Look.NONE else look)
+        applyLook(outW, outH, if (plain) Look.NONE else look, dofAllowed = !plain)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uPeak"), if (assist && peaking) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uZebra"), if (assist && zebra) 1f else 0f)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uLog"), if (log) 1f else 0f)
@@ -442,14 +460,21 @@ class PreviewRenderer(
     }
 
     /** Sets the look uniforms of the OES program (the program is already in use) and keeps the filter's table on texture unit 1. */
-    private fun applyLook(outW: Int, outH: Int, look: Look) {
+    private fun applyLook(outW: Int, outH: Int, look: Look, dofAllowed: Boolean) {
         val v = Effects.Values(look, outW.toFloat() / outH.coerceAtLeast(1))
         fun loc(name: String) = GLES20.glGetUniformLocation(oesProgram, name)
-        GLES20.glUniform1f(loc("uOn"), v.on)
+        val dofOn = dofAllowed && dof && maskReady
+        GLES20.glUniform1f(loc("uOn"), if (dofOn) 1f else v.on)
+        GLES20.glUniform1f(loc("uDof"), if (dofOn) 1f else 0f)
+        GLES20.glUniform1f(loc("uDofR"), dofRadius)
+        GLES20.glUniform1i(loc("uMask"), 2) // its own unit, whatever else is on: two samplers on unit 0 would stop the picture
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE2)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         // The two samplers must sit on different texture units even when no look is on: a sampler left at its default (unit 0) next to the
         // camera's external texture makes strict GPUs (the phone's) refuse every draw, and the viewfinder stays black.
         GLES20.glUniform1i(loc("uLut"), 1)
-        if (v.on > 0.5f) {
+        if (v.on > 0.5f || dofOn) {
             if (look.filter > 0) {
                 GLES20.glActiveTexture(GLES20.GL_TEXTURE1)
                 GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, lutTex)
@@ -472,9 +497,11 @@ class PreviewRenderer(
     }
 
     /** The live picture drawn small into a scratch texture and read back as RGBA rows (bottom row first, as GL reads); null when it failed. */
-    private fun readSmall(w: Int, plain: Boolean): ByteArray? {
+    private fun readSmall(w: Int, plain: Boolean, full: Boolean = false): ByteArray? {
         val boxH = if (boxHeight in 1 until viewH) boxHeight else viewH
-        val h = (w.toFloat() * boxH / viewW.coerceAtLeast(1)).toInt().coerceIn(16, 2048)
+        val upW = if (sensorOrientation % 180 == 90) bufferHeight else bufferWidth // the whole upright frame, not the part the screen shows
+        val upH = if (sensorOrientation % 180 == 90) bufferWidth else bufferHeight
+        val h = (if (full) w.toFloat() * upH / upW.coerceAtLeast(1) else w.toFloat() * boxH / viewW.coerceAtLeast(1)).toInt().coerceIn(16, 2048)
         smallW = w; smallH = h
         return try {
             if (histTex == 0) {
@@ -512,6 +539,24 @@ class PreviewRenderer(
         if (now - histAt < 200_000_000L) return
         histAt = now
         readSmall(96, plain = false)?.let { sink(Histogram.of(it)) }
+    }
+
+    /** About eight times a second while video depth of field is on: the whole upright frame, small, for the person mask (rows bottom first, like the texture). */
+    private fun maybeMask() {
+        val sink = maskSink ?: return
+        if (!hasFrame || !dof) return
+        val now = System.nanoTime()
+        if (now - maskAt < 120_000_000L) return
+        maskAt = now
+        readSmall(256, plain = true, full = true)?.let { sink(it, smallW, smallH) }
+    }
+
+    /** A person mask from the scanner: [values] one byte per pixel (255 = person), rows bottom first, [w] x [h]. */
+    fun setMask(values: ByteArray, w: Int, h: Int) = post {
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
+        GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
+        GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, w, h, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(values))
+        maskReady = true
     }
 
     /** Every [analysisEveryMs] while [analysis] is set: a small copy of the picture, without any look and never mirrored (so text reads right), for QR and text scanning. */
@@ -590,6 +635,7 @@ class PreviewRenderer(
             float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             void main() {
                 vec2 b = (uM * vec3(vUv, 1.0)).xy;
+                gMaskUv = b;
                 vec2 uv = (uSt * vec4(b, 0.0, 1.0)).xy;
                 vec3 raw = texture2D(uTex, uv).rgb;
                 vec3 c = raw;

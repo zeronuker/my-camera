@@ -68,6 +68,22 @@ class FrameScanner(context: android.content.Context) {
         return true
     }
 
+    /** The person mask of a GL read-back frame (see [com.claudeborne.camera.proc.Portrait.maskBytes]); frames that arrive while it works are dropped. [done] runs on the scanner thread. */
+    fun mask(rgba: ByteArray, w: Int, h: Int, done: (ByteArray, Int, Int) -> Unit): Boolean {
+        if (!busy.compareAndSet(false, true)) return false
+        worker.execute {
+            try {
+                val bitmap = upright(rgba, w, h)
+                val m = runCatching { com.claudeborne.camera.proc.Portrait.maskBytes(bitmap) }.getOrNull()
+                bitmap.recycle()
+                if (m != null) done(m.first, m.second, m.third)
+            } finally {
+                busy.set(false)
+            }
+        }
+        return true
+    }
+
     /** Reads all the text of a photo (JPEG bytes turned by [rotation] degrees to be upright). Blocks: call it off the main thread. Empty when none. */
     fun readPhoto(jpeg: ByteArray, rotation: Int): String {
         val bitmap = decode(jpeg) ?: return ""

@@ -475,6 +475,15 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     LaunchedEffect(qr) { while (qr != null) { delay(500); if (android.os.SystemClock.elapsedRealtime() - qrSeenAt > 6000) qr = null } }
     BackHandler(textResult != null) { textResult = null }
     BackHandler(scanDraft != null && !scanBusy) { scanDraft = null }
+    // video depth of field: the renderer blurs where the person mask says background; the mask comes from the scanner thread
+    val dofOn = AppSettings.videoDof && mode.style == VideoStyle.NORMAL && facing == Facing.BACK && picked?.highSpeed != true && resumed
+    DisposableEffect(dofOn) {
+        renderer.dofRadius = 0.03f // about f/2.8
+        renderer.dof = dofOn
+        renderer.maskSink = if (dofOn) { rgba, w, h -> scanner.mask(rgba, w, h) { bytes, mw, mh -> renderer.setMask(bytes, mw, mh) }; Unit } else null
+        glView?.requestRender()
+        onDispose { renderer.dof = false; renderer.maskSink = null }
+    }
     // the level line: the phone's gravity, only while the line is on show
     val levelOn = (proMode && AppSettings.levelLine) || AppSettings.composeLevel
     DisposableEffect(levelOn, resumed) {

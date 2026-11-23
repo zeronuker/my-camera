@@ -44,6 +44,14 @@ object Portrait {
         MaskData(FloatArray(m.width * m.height).also { buf.rewind(); buf.asFloatBuffer().get(it) }, m.width, m.height)
     }.getOrNull()
 
+    /** The person mask of [bitmap] as bytes (255 = person), rows bottom first (as a GL texture wants them), and its size; null when it failed. */
+    fun maskBytes(bitmap: Bitmap): Triple<ByteArray, Int, Int>? {
+        val m = segment(bitmap) ?: return null
+        val out = ByteArray(m.w * m.h)
+        for (y in 0 until m.h) for (x in 0 until m.w) out[(m.h - 1 - y) * m.w + x] = (m.values[y * m.w + x].coerceIn(0f, 1f) * 255f).toInt().toByte()
+        return Triple(out, m.w, m.h)
+    }
+
     /** The share of [bitmap] that is a person (0..1), or 0 when none is found. */
     fun cover(bitmap: Bitmap): Float {
         val m = segment(bitmap) ?: return 0f

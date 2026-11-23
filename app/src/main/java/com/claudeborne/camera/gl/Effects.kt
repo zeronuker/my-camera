@@ -21,6 +21,11 @@ internal object Effects {
         uniform vec4 uTilt;
         uniform vec2 uOut;
         uniform float uAspect;
+        // video depth of field: a person mask (1 = person) in full-frame coordinates; the background is blurred where it is 0
+        uniform sampler2D uMask;
+        uniform float uDof;
+        uniform float uDofR;
+        vec2 gMaskUv;
     """
 
     const val FUNCTIONS = """
@@ -39,6 +44,20 @@ internal object Effects {
 
         // Tilt-shift: blur grows with the distance from a band that can be moved and turned
         vec3 base(vec2 d) {
+            if (uDof > 0.5) {
+                float m = texture2D(uMask, gMaskUv).r;
+                float amount = 1.0 - smoothstep(0.3, 0.7, m);
+                if (amount < 0.03) return texel(d);
+                float radius = amount * uDofR;
+                vec3 acc = texel(d);
+                for (int i = 1; i < 16; i++) {
+                    float k = float(i);
+                    float a = k * 2.399963;
+                    vec2 off = vec2(cos(a), sin(a)) * sqrt(k / 16.0) * radius;
+                    acc += texel(d + off * vec2(1.0 / uAspect, 1.0));
+                }
+                return acc / 16.0;
+            }
             if (uTilt.w < 0.5) return texel(d);
             vec2 p = (d - vec2(0.5, uTilt.x)) * vec2(uAspect, 1.0);
             float dist = abs(-p.x * sin(uTilt.z) + p.y * cos(uTilt.z));
