@@ -270,6 +270,13 @@ Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extens
 - Portrait distortion correction (setting): straighten faces near the ultrawide edges.
 - All our own: the phone exposes no FACE_RETOUCH extension.
 
+**Built in Phase 8 (facts learned, details in the hand-over note):**
+- Library added (owner OK'd): ML Kit Face Mesh Detection 16.0.0-beta3 (bundled; native libs include x86_64). Faces come from the scanner thread (`face/FaceFinder.kt`, `FrameScanner.faces`, `PreviewRenderer.faceSink` about 10 times a second, the whole upright frame at 384 px); `FaceTrack` smooths the points between looks. Up to 2 faces (the largest).
+- The warp and the smoothing live in the shared effect code (`gl/Effects.kt` `WARP`, `retouchSkin`), so live picture, video and saved photo match. The warp works in camera-frame coordinates (never mirrored), so mirror selfie, crops and turned video need nothing special. Photos: `PhotoLook` finds the faces again on the full photo (at most 1280 px long) and saves a plain JPEG; no face found means the photo is saved without retouch.
+- Panel (button left of the lens pills, Photo / Portrait / normal video, rear and front): Original, Natural, Classic, Reset and the 11 sliders, each 0 to 100, one direction (smoother, brighter, bigger eyes, smaller head / jaw / cheeks / chin / hairline / nose, fuller temples). Choice is remembered. Hidden in Master, slo-mo and 120/240 fps.
+- Portrait distortion correction (Settings > Photo, only where a rear camera zooms below 1x, default on): in Photo and Portrait on the rear camera below 1x, faces away from the middle are squeezed along the line from the middle by cos(theta); theta comes from a rough half-diagonal angle that falls from 55 degrees at 0.67x to 0 at 1x (`RetouchOps.edgeAngle`). Approximate: check on the phone and tune.
+- Emulator test aid (debug builds only): a file `files/debug_face.txt` in the app with "x y h" (face centre across and up the frame, height, as fractions) makes every look return one made-up face, so the warp, smoothing, panel and saved photo can be proven without a real face.
+
 ### Phase 9 — dual view and quad view (Opus)
 
 - Dual-view video (More): front + rear. Layouts: PiP (move, resize, swap), top-bottom, side-by-side. Record combined (GL composite) or two files (setting). Photo capture of the composite.
