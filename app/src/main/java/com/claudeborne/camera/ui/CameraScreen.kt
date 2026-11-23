@@ -105,6 +105,11 @@ import com.claudeborne.camera.scan.Enhance
 import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
+import com.claudeborne.camera.proc.FrameStack
+import com.claudeborne.camera.proc.HdrMerge
+import com.claudeborne.camera.proc.Panorama
+import com.claudeborne.camera.proc.SweepRules
+import kotlinx.coroutines.currentCoroutineContext
 import android.hardware.camera2.CameraExtensionCharacteristics
 import com.claudeborne.camera.scan.LensShare
 import com.claudeborne.camera.scan.FrameScanner
@@ -203,6 +208,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var formatOpen by remember { mutableStateOf(false) }
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
     val scanner = remember { FrameScanner(context.applicationContext) }
+    var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
+    var busyText by remember { mutableStateOf("READING TEXT") }
+    var finishFlag by remember { mutableStateOf(false) } // second tap in Pano / Long exposure: stop taking pictures and finish
+    var sweepProgress by remember { mutableStateOf<Float?>(null) }
     var macro by remember { mutableStateOf(false) } // the ultra wide lens is on for a close-up
     var action by remember { mutableStateOf(false) } // Action scene mode
     val palmHook = remember { arrayOf<() -> Unit>({}) } // 0: the palm was seen long enough: start the 3 second timer
@@ -334,12 +343,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
     // slo-mo needs the rear camera's high-speed sizes; a phone without them simply has no SLO-MO in the strip
     val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
+    val hasGyro = remember { (context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager).getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE) != null }
     val nightOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_NIGHT) && !engine.extRefused
     val extWanted = if (nightOk && !isVideo && !wantRaw && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways))) CameraExtensionCharacteristics.EXTENSION_NIGHT else -1
     LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
     val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -349,7 +359,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
     }
     // the look: filter, Soft light and styles (Master), scenes (Video), Underwater and Tilt-shift; 120 and 240 fps video bypasses the GL pipeline, so it gets none
-    val lookFilterOk = !isMaster && !mode.isScanner && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
+    val lookFilterOk = !isMaster && !mode.oneShot && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
     val look = if (isVideo && picked?.highSpeed == true) Look.NONE else Look(
         filter = if (lookFilterOk) AppSettings.filter.coerceIn(0, com.claudeborne.camera.look.Filters.all.lastIndex) else 0,
         soft = if (mode == Mode.PHOTO || isMaster) AppSettings.softLight else 0,
@@ -469,6 +479,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
 
             override fun onPhoto(photo: CameraEngine.Photo) {
                 screenFlash = false
+                collect?.let { it(photo); return }
                 if (textModeNow) { // Text mode keeps no photo: it reads the words and opens the editor
                     readingText = true
                     scope.launch(Dispatchers.IO) {
@@ -646,6 +657,110 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         engine.takePhotoAndWait(CameraEngine.Shot(flashMode, PhotoRules.jpegOrientation(i.sensorOrientation, deviceDegrees, front), place, squareCrop = aspect == Aspect.R1_1, format = format))
         screenFlash = false
         return true
+    }
+
+    /** The result of a multi-picture feature goes through the normal photo path (look, watermark, saving, thumbnail). Its pixels are already upright. */
+    fun saveMerged(jpeg: ByteArray) { engine.listener?.onPhoto(CameraEngine.Photo(jpeg, StillFormat.JPEG, 0, mirrored = false, squareCrop = false)) }
+
+    /** Auto HDR: three exposures (normal, dark, bright) fused into one picture. */
+    suspend fun hdrShot() {
+        val frames = mutableListOf<ByteArray>()
+        var turn = 0
+        collect = { p -> synchronized(frames) { frames.add(p.bytes) }; turn = p.jpegOrientation }
+        val base = ev
+        try {
+            for (d in listOf(0f, -2f, 2f)) {
+                engine.setExposure(base + d + scene.ev)
+                if (d != 0f) delay(350) // the camera needs a few frames to settle on the new exposure
+                if (!captureOnce(useFlash = false)) break
+            }
+        } finally {
+            collect = null
+            engine.setExposure(base + scene.ev)
+        }
+        if (frames.size < 2) return say("HDR could not take its pictures")
+        busyText = "MERGING HDR"; readingText = true
+        val merged = withContext(Dispatchers.Default) { runCatching { HdrMerge.merge(frames, turn) }.getOrNull() }
+        readingText = false
+        if (merged != null) saveMerged(merged)
+        else { say("HDR failed. Saving the normal picture."); engine.listener?.onPhoto(CameraEngine.Photo(frames[0], StillFormat.JPEG, turn, false, false)) }
+    }
+
+    /** Long exposure: pictures are taken for the chosen time and stacked (average, or brightest pixel for light trails). Tap again to finish early. */
+    suspend fun longExpShot() {
+        val stack = FrameStack(AppSettings.lexpTrails)
+        val pool = java.util.concurrent.Executors.newSingleThreadExecutor()
+        var turn = 0
+        collect = { p -> turn = p.jpegOrientation; val bytes = p.bytes; val rot = p.jpegOrientation; pool.execute { runCatching { stack.add(bytes, rot) } } }
+        val total = AppSettings.lexpSec * 1000L
+        val start = android.os.SystemClock.elapsedRealtime()
+        var n = 0
+        try {
+            while (currentCoroutineContext().isActive && !finishFlag) {
+                val used = android.os.SystemClock.elapsedRealtime() - start
+                sweepProgress = (used / total.toFloat()).coerceAtMost(1f)
+                if (used >= total && n >= 2) break
+                if (!captureOnce(useFlash = false)) break
+                n++; runCount = n
+            }
+        } finally {
+            collect = null
+            sweepProgress = null
+        }
+        if (n < 2) { pool.shutdown(); return say("Too few pictures. Try a longer time.") }
+        busyText = "STACKING"; readingText = true
+        val result = withContext(Dispatchers.Default) { pool.submit {}.get(); pool.shutdown(); runCatching { stack.result() }.getOrNull() }
+        readingText = false
+        if (result != null) saveMerged(result) else say("Could not stack the pictures")
+    }
+
+    /** Panorama: the gyroscope says when the phone has turned a step; a picture is taken each step. Tap again to stitch. */
+    suspend fun panoShot() {
+        val sensors = context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager
+        val gyro = sensors.getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE) ?: return say("This phone has no gyroscope")
+        var since = 0f
+        var tooFast = false
+        var lastNs = 0L
+        val listener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                if (lastNs != 0L) since += SweepRules.turned(e.values[0], e.values[1], (e.timestamp - lastNs) / 1e9f)
+                lastNs = e.timestamp
+                tooFast = SweepRules.tooFast(e.values[0], e.values[1])
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, accuracy: Int) {}
+        }
+        val frames = mutableListOf<ByteArray>()
+        var turn = 0
+        collect = { p -> synchronized(frames) { frames.add(p.bytes) }; turn = p.jpegOrientation }
+        sensors.registerListener(listener, gyro, android.hardware.SensorManager.SENSOR_DELAY_GAME)
+        try {
+            if (!captureOnce(useFlash = false)) return say("The camera is not ready")
+            since = 0f
+            runCount = 1
+            var warned = 0L
+            while (currentCoroutineContext().isActive && !finishFlag && frames.size < SweepRules.MAX_FRAMES) {
+                delay(40)
+                sweepProgress = frames.size / SweepRules.MAX_FRAMES.toFloat()
+                if (tooFast && android.os.SystemClock.elapsedRealtime() - warned > 1500) { warned = android.os.SystemClock.elapsedRealtime(); say("Slower") }
+                if (SweepRules.takeNext(since) && !tooFast) {
+                    if (!captureOnce(useFlash = false)) break
+                    since = 0f
+                    runCount = frames.size
+                }
+            }
+        } finally {
+            sensors.unregisterListener(listener)
+            collect = null
+            sweepProgress = null
+        }
+        if (frames.size < 2) return say("Turn the phone slowly while the bar moves, then tap again")
+        busyText = "STITCHING"; readingText = true
+        val result = withContext(Dispatchers.Default) { Panorama.stitch(frames, turn) }
+        readingText = false
+        when (result) {
+            is Panorama.Result.Done -> saveMerged(result.jpeg)
+            is Panorama.Result.Failed -> say(result.reason)
+        }
     }
 
     fun stopRecording(note: String? = null) {
@@ -856,18 +971,26 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (mode.isVideo) return recordTap()
         menu = Menu.NONE
         evOpen = false
-        if (runJob != null) { runJob?.cancel(); say("Stopped"); return }
+        if (runJob != null) { if ((mode == Mode.PANO || mode == Mode.LONGEXP) && !finishFlag) { finishFlag = true; return }; runJob?.cancel(); say("Stopped"); return }
         if (engine.state != CameraEngine.State.Streaming || engine.capturing || readingText) return
         if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
-        val timerNow = if (mode.isScanner) 0 else timer ?: timerSec // Text and Scan Docs take one picture at once
-        val intervalNow = if (mode.isScanner) 0 else intervalSec
+        val timerNow = if (mode.oneShot) 0 else timer ?: timerSec // Text and Scan Docs take one picture at once
+        val intervalNow = if (mode.oneShot) 0 else intervalSec
+        val multi: (suspend () -> Unit)? = when {
+            mode == Mode.PANO -> { { panoShot() } }
+            mode == Mode.LONGEXP -> { { longExpShot() } }
+            mode == Mode.PHOTO && AppSettings.autoHdr && extWanted < 0 && facing == Facing.BACK && DocScanner.available && flash == Flash.OFF -> { { hdrShot() } }
+            else -> null
+        }
+        finishFlag = false
         runJob = scope.launch {
             try {
                 if (timerNow > 0) {
                     for (s in timerNow downTo 1) { countdown = s; delay(1000) }
                     countdown = null
                 }
-                if (intervalNow > 0) {
+                if (multi != null) multi()
+                else if (intervalNow > 0) {
                     var n = 0
                     while (isActive) {
                         if (!captureOnce(useFlash = true)) break
@@ -879,6 +1002,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 }
             } finally {
                 countdown = null
+                collect = null
+                sweepProgress = null
+                finishFlag = false
                 runCount = 0
                 runJob = null
             }
@@ -886,7 +1012,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     }
     palmHook[0] = { if (mode == Mode.PHOTO && runJob == null) { say("Palm seen: 3 s"); shutterTap(3) } }
     fun holdStart() {
-        if (mode.isVideo || mode.isScanner || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
+        if (mode.isVideo || mode.oneShot || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
         if (heat != Heat.OK) return say("No burst while the phone is hot")
         menu = Menu.NONE
         bursting = true
@@ -1000,6 +1126,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
                 Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                    Visible(mode == Mode.LONGEXP && runJob == null && !readingText, enter = popEnter, exit = popExit) {
+                        QualityPill("${AppSettings.lexpSec} S · ${if (AppSettings.lexpTrails) "TRAILS" else "SMOOTH"}", qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
+                    }
                     Visible(lensOk && (mode == Mode.PHOTO || mode == Mode.TEXT) && !launch.secure, enter = popEnter, exit = popExit) {
                         RoundButton(onClick = ::openLens) { CbIcon(Icon.SEARCH, Color.White, size = 24.dp) }
                     }
@@ -1022,11 +1151,20 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     }
                     Toast(toast)
                     Visible(engine.capturing && extWanted >= 0, enter = popEnter, exit = popExit) { WorkingLine("NIGHT SHOT · HOLD STILL", null) }
+                    Visible(runJob != null && sweepProgress != null, enter = popEnter, exit = popExit) {
+                        WorkingLine(if (mode == Mode.PANO) "SWEEP SLOWLY · TAP TO FINISH" else "LONG EXPOSURE · HOLD STILL · TAP TO FINISH", sweepProgress)
+                    }
                     HeatChip(heat, video = mode.isVideo)
                     Visible(mode == Mode.PROVIDEO && recording, enter = popEnter, exit = popExit) { AudioMeter(micLevel) }
                 }
                 Visible(formatOpen && isMaster, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
                     QualityPanel(listOf(ChipRow("PHOTO FORMAT", MasterFormat.entries.map { f -> Chip(f.label, f == masterFormat) { AppSettings.masterFormat = f.ordinal; formatOpen = false; say("Format: ${f.label}") } })))
+                }
+                Visible(qualityOpen && mode == Mode.LONGEXP, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
+                    QualityPanel(listOf(
+                        ChipRow("TIME", listOf(2, 5, 10, 30).map { sec -> Chip("$sec S", sec == AppSettings.lexpSec) { AppSettings.lexpSec = sec } }),
+                        ChipRow("LOOK", listOf(Chip("SMOOTH", !AppSettings.lexpTrails) { AppSettings.lexpTrails = false }, Chip("LIGHT TRAILS", AppSettings.lexpTrails) { AppSettings.lexpTrails = true })),
+                    ))
                 }
                 Visible(qualityOpen && isVideo && !recording, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
                     val rows = mutableListOf<ChipRow>()
@@ -1182,7 +1320,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onInterval = { intervalSec = it; menu = Menu.NONE; say(if (it == 0) "Interval shooting: Off" else "Interval: every $it s") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
-                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode.isScanner,
+                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode.oneShot,
+                        showAutoHdr = mode == Mode.PHOTO && !front && DocScanner.available, autoHdr = AppSettings.autoHdr, onAutoHdr = { AppSettings.autoHdr = !AppSettings.autoHdr; menu = Menu.NONE; say("Auto HDR: ${if (AppSettings.autoHdr) "On" else "Off"}") },
                         showAction = mode == Mode.PHOTO && info?.actionOk == true, action = action, onAction = { action = !action; menu = Menu.NONE; say("Action mode: ${if (action) "On" else "Off"}") },
                         showMacro = mode == Mode.PHOTO && closeUp, macro = macro, onMacro = { menu = Menu.NONE; if (macro) leaveMacro() else enterMacro() },
                         onSoft = { AppSettings.softLight = it; menu = Menu.NONE; say("Soft light: ${com.claudeborne.camera.look.SoftLight.label(it)}") },
@@ -1193,7 +1332,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 }
             }
             ErrorOverlay(state, onRetry = engine::retry)
-            BusyOverlay(readingText, if (mode == Mode.SCAN) "FINDING THE PAGE" else "READING TEXT", null)
+            BusyOverlay(readingText, if (mode == Mode.SCAN) "FINDING THE PAGE" else busyText, null)
             AnimatedOverlay(scanDraft, enter = overlayEnter, exit = overlayExit, modifier = Modifier.fillMaxSize()) { draft ->
                 fun keep(q: Quad, how: Enhance, finish: Boolean) {
                     scanBusy = true
