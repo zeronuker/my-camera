@@ -193,6 +193,13 @@ Done when: the QS tile and the launcher shortcuts open this app, and a lock-scre
 - RAW DNG via `DngCreator`: every lens including the front, 12 MP (4096x3072; front 3280x2464).
 - Pro video (More → PRO VIDEO): the same manual controls while recording, shutter shown as shutter angle option, audio level meter, our own log-style flat profile (no OnePlus log exposed; tonemap CONTRAST_CURVE or a GL curve, best on 10-bit HLG), LUT preview.
 
+**Built in Phase 4 (facts learned, details in the hand-over note):**
+- Modes in the strip: MASTER · VIDEO · PHOTO · SLO-MO · TIME-LAPSE · PRO VIDEO (the strip scrolls to keep the chosen name centred; Phase 10 reorders with the More grid). Master and Pro video are hidden on a lock-screen launch (DNG files and manual controls are not for it).
+- Pro exposure is one group: the first ISO or SHUTTER touch puts both on manual (starting at what the camera was using), AUTO on either gives both back. While manual, EV is off. Live picture exposure is capped at 1/4 s (a longer one would freeze the viewfinder); the photo gets the real time. In Pro video the shutter is capped at one frame time.
+- RAW: a second ImageReader (RAW_SENSOR, largest size) in the photo session; DngCreator writes the file next to the JPEG (RAW+JPG) or alone. If the camera refuses the session with RAW, Master falls back to JPG with a toast. RAW is uncropped (no zoom crop).
+- Kelvin white balance uses the camera's own colour calibration matrices, not a measurement of this sensor: needs checking on the phone. Presets use the camera's AWB modes.
+- Peaking, zebra, histogram and the level line are drawn on the screen only; nothing of them reaches a photo or video. Pro video "LOG" is a GL curve (flat profile) applied in the encoder pass; "LUT" shows the normal look on screen while the file is flat. Pro video has no 120/240 fps (manual exposure cannot ride the high-speed path).
+
 ### Phase 5 — looks and overlays
 
 - Filters panel (`14-filters-a.jpg`…`19`): Original + ~14 of our own looks (film, CCD-flash, B&W, food, vivid…), live preview, info button. 3D LUTs in the GL pipeline, applied identically to the saved photo.

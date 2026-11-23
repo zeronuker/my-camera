@@ -22,6 +22,7 @@ enum class StillFormat(val mime: String, val extension: String) {
     JPEG("image/jpeg", "jpg"),
     JPEG_R("image/jpeg", "jpg"), // Ultra HDR: a normal JPEG with a gain map inside
     HEIC("image/heic", "heic"),
+    DNG("image/x-adobe-dng", "dng"), // Master RAW; never chosen by chooseFormat, it is written next to (or instead of) the photo
 }
 
 object PhotoRules {

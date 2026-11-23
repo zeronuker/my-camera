@@ -103,6 +103,12 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
 
     val isPaused get() = paused
 
+    /** How loud the microphone is right now, 0..1 (1 is the loudest the microphone can record). */
+    @Volatile var level = 0f
+        private set
+
+    private fun peak(pcm: ByteArray, bytes: Int): Float = VideoRules.peakLevel(pcm, bytes)
+
     /** Creates the file, the encoders and the input surface. Throws only what [start] callers catch (see [Result]). */
     fun prepare(): Result<Surface> = runCatching {
         val name = VideoRules.fileName(System.currentTimeMillis())
@@ -406,6 +412,7 @@ class VideoRecorder(private val context: Context, private val cfg: Config, priva
             while (!audioStop) {
                 val n = rec.read(chunk, 0, chunk.size)
                 if (n <= 0) continue
+                level = maxOf(peak(chunk, n), level * 0.85f) // the Pro video meter: the loudest sample, falling back smoothly
                 val frames = n / (2 * audioChannels)
                 val chunkNs = frames * 1_000_000_000L / audioRate
                 val now = SystemClock.elapsedRealtimeNanos()

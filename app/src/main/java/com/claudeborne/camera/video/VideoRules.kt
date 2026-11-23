@@ -16,6 +16,18 @@ enum class Hdr(val label: String, val camera: Long, val transfer: Int) {
 }
 
 object VideoRules {
+    /** The loudest sample of 16 bit little-endian [pcm] (first [bytes] bytes) as 0..1. */
+    fun peakLevel(pcm: ByteArray, bytes: Int): Float {
+        var peak = 0
+        var i = 0
+        while (i + 1 < bytes) {
+            val v = kotlin.math.abs(((pcm[i + 1].toInt() shl 8) or (pcm[i].toInt() and 0xFF)).toShort().toInt())
+            if (v > peak) peak = v
+            i += 2
+        }
+        return (peak / 32768f).coerceIn(0f, 1f)
+    }
+
     /** `VID_20261123_154210_123.mp4`, in the same style as the photos. */
     fun fileName(timeMs: Long, zone: TimeZone = TimeZone.getDefault()): String =
         SimpleDateFormat("'VID_'yyyyMMdd_HHmmss_SSS", Locale.US).apply { timeZone = zone }.format(Date(timeMs)) + ".mp4"

@@ -54,8 +54,10 @@ object PhotoSaver {
 
     private fun write(context: Context, bytes: ByteArray, wanted: StillFormat, exifOrientation: Int?, squareCrop: Boolean, timeMs: Long): Uri {
         // the 1:1 shape is cut out of the 4:3 photo; that makes a plain JPEG (an Ultra HDR file loses its gain map when re-encoded)
-        val format = if (squareCrop) StillFormat.JPEG else wanted
+        val raw = wanted == StillFormat.DNG // a DNG is written as it is: no crop, the turn is already inside it
+        val format = if (squareCrop && !raw) StillFormat.JPEG else wanted
         val data = when {
+            raw -> bytes
             squareCrop -> squared(context, bytes, exifOrientation)
             exifOrientation != null -> withOrientation(context, bytes, exifOrientation)
             else -> bytes

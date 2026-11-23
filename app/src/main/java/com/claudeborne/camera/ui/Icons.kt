@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK }
+enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK, HISTOGRAM, FACE_METERING }
 
 /** Line icons drawn on a 24 x 24 grid, so the app needs no icon library and they match the brand's thin outlines. */
 @Composable
@@ -261,6 +261,18 @@ fun CbIcon(icon: Icon, color: Color, modifier: Modifier = Modifier, filled: Bool
                 drawCircle(color, 1.8f * k, p(12f, 12f))
             }
             Icon.CHECK -> shape(Path().apply { moveTo(5f * k, 12.5f * k); lineTo(10f * k, 17.5f * k); lineTo(19f * k, 7f * k) })
+            Icon.HISTOGRAM -> {
+                round(3f, 4f, 18f, 16f, 2.5f)
+                shape(poly(false, 5.5f, 17f, 8.5f, 17f, 10.5f, 9f, 12.5f, 14f, 14f, 11f, 15.5f, 17f, 18.5f, 17f))
+            }
+            Icon.FACE_METERING -> {
+                for ((x, y, dx, dy) in listOf(listOf(3.5f, 3.5f, 1f, 1f), listOf(20.5f, 3.5f, -1f, 1f), listOf(3.5f, 20.5f, 1f, -1f), listOf(20.5f, 20.5f, -1f, -1f))) {
+                    seg(x, y, x + dx * 4f, y)
+                    seg(x, y, x, y + dy * 4f)
+                }
+                drawCircle(color, 2.6f * k, p(12f, 9.5f), style = line)
+                shape(Path().apply { moveTo(7f * k, 17f * k); cubicTo(7f * k, 13.5f * k, 17f * k, 13.5f * k, 17f * k, 17f * k) })
+            }
         }
     }
 }

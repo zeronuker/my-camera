@@ -219,11 +219,31 @@ internal fun MenuPanel(
     menu: Menu, aspect: Aspect, timerSec: Int, intervalSec: Int,
     onPage: (Menu) -> Unit, onAspect: (Aspect) -> Unit, onTimer: (Int) -> Unit, onInterval: (Int) -> Unit, onSettings: () -> Unit,
     modifier: Modifier = Modifier, showSettings: Boolean = true,
+    /** Master mode adds Histogram and Face metering (the latter only where the camera can find faces). */
+    master: Boolean = false, histogram: Boolean = false, faceOk: Boolean = false, face: Boolean = false, onHistogram: () -> Unit = {}, onFace: () -> Unit = {},
 ) {
     Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
         AnimatedContent(menu, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "menu") { page ->
             when (page) {
-                Menu.MAIN, Menu.NONE -> Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
+                Menu.MAIN, Menu.NONE -> if (master) {
+                    // the stock Master menu: a grid of four columns, Aspect ratio, Timer, Histogram, Face metering, Interval shooting, Settings
+                    val items = buildList<@Composable () -> Unit> {
+                        add { MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) } }
+                        add { MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) } }
+                        add { MenuItem(Icon.HISTOGRAM, "Histogram", histogram, onHistogram) }
+                        if (faceOk) add { MenuItem(Icon.FACE_METERING, "Face metering", face, onFace) }
+                        add { MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) } }
+                        if (showSettings) add { MenuItem(Icon.GEAR, "Settings", false, onSettings) }
+                    }
+                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                        items.chunked(4).forEach { row ->
+                            Row(Modifier.fillMaxWidth()) {
+                                row.forEach { item -> Box(Modifier.weight(1f), Alignment.Center) { item() } }
+                                repeat(4 - row.size) { Box(Modifier.weight(1f)) }
+                            }
+                        }
+                    }
+                } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceEvenly) {
                     MenuItem(Icon.ASPECT, "Aspect ratio", aspect != Aspect.FULL) { onPage(Menu.ASPECT) }
                     MenuItem(Icon.TIMER, "Timer", timerSec > 0) { onPage(Menu.TIMER) }
                     MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) }

@@ -42,6 +42,8 @@ class PreviewRenderer(
     class Encoding(
         val surface: Surface, val width: Int, val height: Int, val turn: Int, val mirror: Boolean, val tenBit: Boolean,
         val gate: (frameTimestampNs: Long) -> Long,
+        /** Pro video: the file gets the flat "log" look (see the shader below). */
+        val log: Boolean = false,
     )
 
     private class Target(val display: EGLDisplay, val context: EGLContext, val surface: EGLSurface)
@@ -54,6 +56,21 @@ class PreviewRenderer(
     @Volatile var boxTop = 0
     @Volatile var boxHeight = 0
     private var holdShare = 1f
+
+    /** Pro assistants, drawn on the screen only: never into a video, a snapshot or a saved photo. */
+    @Volatile var peaking = false
+    @Volatile var zebra = false
+    /** The screen shows the flat log look too (Pro video with the LUT preview off). */
+    @Volatile var viewLog = false
+    /** Colour of the focus peaking (the brand mint). */
+    @Volatile var assistColor = floatArrayOf(0.25f, 0.88f, 0.77f)
+    /** Receives a 64 bin brightness histogram of the live picture a few times a second while set. */
+    @Volatile var histogram: ((IntArray) -> Unit)? = null
+    private var histAt = 0L
+    private var histTex = 0
+    private var histFbo = 0
+    private var histW = 0
+    private var histH = 0
 
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
@@ -122,6 +139,9 @@ class PreviewRenderer(
         holding = false
         snapTex = 0
         snapFbo = 0
+        histTex = 0
+        histFbo = 0
+        histW = 0
         pending.set(0)
         oesProgram = program(VERTEX, OES_FRAGMENT)
         plainProgram = program(VERTEX, PLAIN_FRAGMENT)
@@ -166,6 +186,11 @@ class PreviewRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
+        drawScreen()
+        maybeHistogram()
+    }
+
+    private fun drawScreen() {
         val st = surfaceTexture ?: return
         var gotFrame = false
         if (encoding == null) { // while recording, the encoder events take every frame (see encodeFrame)
@@ -270,7 +295,7 @@ class PreviewRenderer(
         try {
             if (!EGL14.eglMakeCurrent(t.display, t.surface, t.surface, t.context)) return
             GLES20.glViewport(0, 0, e.width, e.height)
-            drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn))
+            drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), log = e.log)
             EGLExt.eglPresentationTimeANDROID(t.display, t.surface, pts)
             EGL14.eglSwapBuffers(t.display, t.surface)
         } finally {
@@ -313,17 +338,63 @@ class PreviewRenderer(
     }
 
     private fun drawLive(boxH: Int) {
-        drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH))
+        drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH), assist = true, log = viewLog)
     }
 
-    private fun drawOes(matrix: FloatArray) {
+    /** Draws the current camera frame. [assist] adds the Pro assistants (screen only); [log] applies the flat log look. */
+    private fun drawOes(matrix: FloatArray, assist: Boolean = false, log: Boolean = false) {
         GLES20.glUseProgram(oesProgram)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uPeak"), if (assist && peaking) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uZebra"), if (assist && zebra) 1f else 0f)
+        GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uLog"), if (log) 1f else 0f)
+        GLES20.glUniform2f(GLES20.glGetUniformLocation(oesProgram, "uPx"), 2.5f / bufferWidth.coerceAtLeast(1), 2.5f / bufferHeight.coerceAtLeast(1))
+        val c = assistColor
+        GLES20.glUniform3f(GLES20.glGetUniformLocation(oesProgram, "uAssist"), c[0], c[1], c[2])
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
         GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(oesProgram, "uTex"), 0)
         GLES20.glUniformMatrix3fv(GLES20.glGetUniformLocation(oesProgram, "uM"), 1, false, matrix, 0)
         GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(oesProgram, "uSt"), 1, false, transform, 0)
         drawQuad(oesProgram)
+    }
+
+    /** About five times a second: draws the frame small into a scratch texture, reads it back and counts its brightness. */
+    private fun maybeHistogram() {
+        val sink = histogram ?: return
+        if (!hasFrame) return
+        val now = System.nanoTime()
+        if (now - histAt < 200_000_000L) return
+        histAt = now
+        val w = 96
+        val boxH = if (boxHeight in 1 until viewH) boxHeight else viewH
+        val h = (w.toFloat() * boxH / viewW.coerceAtLeast(1)).toInt().coerceIn(16, 256)
+        try {
+            if (histTex == 0) {
+                val ids = IntArray(1)
+                GLES20.glGenTextures(1, ids, 0); histTex = ids[0]
+                GLES20.glGenFramebuffers(1, ids, 0); histFbo = ids[0]
+            }
+            GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, histTex)
+            if (w != histW || h != histH) {
+                GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_RGBA, w, h, 0, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, null)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+                GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+                histW = w; histH = h
+            }
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, histFbo)
+            GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, histTex, 0)
+            GLES20.glViewport(0, 0, w, h)
+            drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, w, h))
+            val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
+            GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
+            val bytes = ByteArray(w * h * 4).also { pixels.get(it) }
+            sink(Histogram.of(bytes))
+        } catch (_: Throwable) {
+            // the histogram is a nice-to-have: a failed read never touches the picture
+        } finally {
+            GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
+            GLES20.glViewport(0, 0, viewW, viewH)
+        }
     }
 
     private fun drawHeld(alpha: Float) {
@@ -374,9 +445,33 @@ class PreviewRenderer(
             uniform samplerExternalOES uTex;
             uniform mat3 uM;
             uniform mat4 uSt;
+            uniform float uPeak;
+            uniform float uZebra;
+            uniform float uLog;
+            uniform vec2 uPx;
+            uniform vec3 uAssist;
+            float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             void main() {
                 vec2 b = (uM * vec3(vUv, 1.0)).xy;
-                gl_FragColor = texture2D(uTex, (uSt * vec4(b, 0.0, 1.0)).xy);
+                vec2 uv = (uSt * vec4(b, 0.0, 1.0)).xy;
+                vec3 c = texture2D(uTex, uv).rgb;
+                float l = luma(c);
+                if (uLog > 0.5) {
+                    // our own flat profile: shadows lifted, highlights squeezed, colour pulled back; the grade restores it
+                    vec3 f = log2(vec3(1.0) + 30.0 * c) / log2(31.0);
+                    f = f * 0.86 + 0.06;
+                    c = mix(vec3(luma(f)), f, 0.78);
+                }
+                if (uPeak > 0.5) {
+                    float e = abs(4.0 * l - luma(texture2D(uTex, uv + vec2(uPx.x, 0.0)).rgb) - luma(texture2D(uTex, uv - vec2(uPx.x, 0.0)).rgb)
+                        - luma(texture2D(uTex, uv + vec2(0.0, uPx.y)).rgb) - luma(texture2D(uTex, uv - vec2(0.0, uPx.y)).rgb));
+                    if (e > 0.16) c = mix(c, uAssist, 0.9);
+                }
+                if (uZebra > 0.5 && l > 0.95) {
+                    float s = step(0.5, fract((gl_FragCoord.x + gl_FragCoord.y) / 16.0));
+                    c = mix(c, vec3(0.05), s * 0.85);
+                }
+                gl_FragColor = vec4(c, 1.0);
             }
         """
 

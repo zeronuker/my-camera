@@ -20,7 +20,12 @@ import com.claudeborne.camera.video.LensZone
 import com.claudeborne.camera.video.VideoCaps
 import android.hardware.camera2.params.SessionConfiguration
 import android.location.Location
+import android.hardware.camera2.DngCreator
+import android.hardware.camera2.params.RggbChannelVector
+import android.media.Image
 import android.media.ImageReader
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
@@ -33,6 +38,7 @@ import com.claudeborne.camera.capture.Flash
 import com.claudeborne.camera.capture.PhotoRules
 import com.claudeborne.camera.capture.StillFormat
 import android.hardware.camera2.params.MeteringRectangle
+import kotlin.math.abs
 import kotlinx.coroutines.CompletableDeferred
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
@@ -60,6 +66,8 @@ class CameraEngine(context: Context) {
         val zoomMin: Float, val zoomMax: Float, val hasFlash: Boolean, val format: StillFormat,
         val activeWidth: Int, val activeHeight: Int, val evStep: Float, val evMinIndex: Int, val evMaxIndex: Int,
         val video: VideoCaps, val cameraClockIsBoot: Boolean, val hasAwbLock: Boolean,
+        /** What the camera allows for the Pro controls; each control is hidden when its range is empty. */
+        val pro: ProCaps = ProCaps(),
     )
 
     /**
@@ -76,10 +84,10 @@ class CameraEngine(context: Context) {
     enum class Focus { IDLE, SEARCHING, FOCUSED, FAILED }
 
     /** The user's format choices when the camera opens; the engine picks what this camera can really do. */
-    class StillPrefs(val heif: Boolean, val ultraHdr: Boolean, val mirrorSelfie: Boolean)
+    class StillPrefs(val heif: Boolean, val ultraHdr: Boolean, val mirrorSelfie: Boolean, val raw: Boolean = false)
 
-    /** One photo to take. */
-    class Shot(val flash: Flash, val jpegOrientation: Int, val location: Location?, val squareCrop: Boolean = false)
+    /** One photo to take. [format] says whether Master wants the JPEG, the DNG or both. */
+    class Shot(val flash: Flash, val jpegOrientation: Int, val location: Location?, val squareCrop: Boolean = false, val format: MasterFormat = MasterFormat.JPG)
 
     class Photo(val bytes: ByteArray, val format: StillFormat, val jpegOrientation: Int, val mirrored: Boolean, val squareCrop: Boolean)
 
@@ -91,6 +99,9 @@ class CameraEngine(context: Context) {
 
         /** A video choice the camera refused (10-bit HDR, Ultra Steady) was switched off so the viewfinder could start. */
         fun onVideoDowngraded(message: String) {}
+
+        /** The camera could not run RAW together with the preview; Master went back to JPG so the viewfinder still starts. */
+        fun onRawRefused() {}
     }
 
     var state: State by mutableStateOf(State.Idle)
@@ -107,6 +118,11 @@ class CameraEngine(context: Context) {
         private set
     /** The camera refused (or died in) a high-speed session this run: 120 and 240 fps choices are hidden until the app restarts. */
     var hsRefused by mutableStateOf(false)
+        private set
+    /** The ISO and exposure time (ns) the camera is using right now (updated a few times a second, for the Pro dials). */
+    var liveIso by mutableIntStateOf(0)
+        private set
+    var liveNs by mutableLongStateOf(0L)
         private set
     @Volatile var listener: Listener? = null
 
@@ -148,6 +164,21 @@ class CameraEngine(context: Context) {
     private var aeRegions = false
     private var focusToken = 0
     private var done: CompletableDeferred<Unit>? = null
+
+    // Pro controls (Master and Pro video): the manual choices, and what the camera reported last
+    @Volatile private var pro = Pro()
+    private var chars: CameraCharacteristics? = null
+    private var ccm: android.hardware.camera2.params.ColorSpaceTransform? = null
+    private var faceRect: MeteringRectangle? = null
+    private var faceCentre = 0 to 0
+    private var liveAt = 0L
+
+    // RAW (Master): its own reader, and the two halves of a DNG (the picture and the result that describes it)
+    private var rawReader: ImageReader? = null
+    private var rawImage: Image? = null
+    private var rawResult: TotalCaptureResult? = null
+    private var needJpeg = false
+    private var needRaw = false
 
     private enum class Phase { NONE, PRECAPTURE, WAIT_DONE }
     private var phase = Phase.NONE
@@ -199,6 +230,13 @@ class CameraEngine(context: Context) {
 
     fun setFlash(mode: Flash) {
         flash = mode
+        handler.post { applyRequest() }
+    }
+
+    /** The manual choices of Master and Pro video; they apply to the live picture, to photos and to video at once. */
+    fun setPro(value: Pro) {
+        pro = value
+        if (!value.faceMetering) faceRect = null
         handler.post { applyRequest() }
     }
 
@@ -333,9 +371,80 @@ class CameraEngine(context: Context) {
         b.set(CaptureRequest.CONTROL_AE_LOCK, locked)
         val follow = if (wantVideo != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
         b.set(CaptureRequest.CONTROL_AF_MODE, if (locked) CaptureRequest.CONTROL_AF_MODE_AUTO else follow)
-        val rect = focusRect?.let { arrayOf(it) }
+        val rect = (focusRect ?: faceRect)?.let { arrayOf(it) } // a tapped point beats the face metering
         if (afRegions) b.set(CaptureRequest.CONTROL_AF_REGIONS, rect)
         if (aeRegions) b.set(CaptureRequest.CONTROL_AE_REGIONS, rect)
+    }
+
+    /**
+     * The manual choices on top of a request ([still]: the real exposure time of a photo; the live picture and video are capped, see
+     * [ProRules.usableExposure]). Anything the camera cannot do is left alone.
+     */
+    private fun applyPro(b: CaptureRequest.Builder, still: Boolean) {
+        val i = info ?: return
+        val p = pro
+        val caps = i.pro
+        val fps = wantVideo?.fps
+        if (p.manualExposure && caps.exposure) {
+            val ns = ProRules.usableExposure(p.exposureNs, fps, still).coerceIn(caps.exposureMinNs, caps.exposureMaxNs)
+            b.set(CaptureRequest.CONTROL_AE_MODE, CaptureRequest.CONTROL_AE_MODE_OFF)
+            b.set(CaptureRequest.SENSOR_SENSITIVITY, p.iso.coerceIn(caps.isoMin, caps.isoMax))
+            b.set(CaptureRequest.SENSOR_EXPOSURE_TIME, ns)
+            b.set(CaptureRequest.SENSOR_FRAME_DURATION, if (fps != null) 1_000_000_000L / fps else ProRules.frameDuration(ns))
+            b.set(CaptureRequest.FLASH_MODE, CaptureRequest.FLASH_MODE_OFF)
+        }
+        when (val w = p.wb) {
+            Wb.Auto -> b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_AUTO) // the builder is reused: undo an earlier choice
+            is Wb.Preset -> if (w.awbMode in caps.awbModes) b.set(CaptureRequest.CONTROL_AWB_MODE, w.awbMode)
+            is Wb.Kelvin -> {
+                val cal = caps.colorCal
+                val matrix = ccm
+                if (caps.kelvin && cal != null && matrix != null) {
+                    val (red, blue) = ProRules.kelvinGains(w.k, cal)
+                    b.set(CaptureRequest.CONTROL_AWB_MODE, CaptureRequest.CONTROL_AWB_MODE_OFF)
+                    b.set(CaptureRequest.COLOR_CORRECTION_MODE, CaptureRequest.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+                    b.set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(red, 1f, 1f, blue))
+                    b.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, matrix)
+                }
+            }
+        }
+        p.focusDiopters?.let {
+            if (caps.focus) {
+                b.set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_OFF)
+                b.set(CaptureRequest.LENS_FOCUS_DISTANCE, it.coerceIn(0f, caps.minFocusDiopters))
+            }
+        }
+        if (caps.faceDetect) b.set(CaptureRequest.STATISTICS_FACE_DETECT_MODE, if (p.faceMetering) CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE else CaptureRequest.STATISTICS_FACE_DETECT_MODE_OFF)
+    }
+
+    /** Called with every preview result: remembers what the camera is doing (for the Pro dials) and follows the biggest face. */
+    private fun watch(result: TotalCaptureResult) {
+        result.get(CaptureResult.COLOR_CORRECTION_TRANSFORM)?.let { if (pro.wb !is Wb.Kelvin) ccm = it }
+        val now = SystemClock.uptimeMillis()
+        if (now - liveAt > 250) {
+            liveAt = now
+            result.get(CaptureResult.SENSOR_SENSITIVITY)?.let { if (it != liveIso) liveIso = it }
+            result.get(CaptureResult.SENSOR_EXPOSURE_TIME)?.let { if (it != liveNs) liveNs = it }
+        }
+        val p = pro
+        if (!p.faceMetering || focusRect != null || locked || p.focusDiopters != null) {
+            if (faceRect != null && !p.faceMetering) faceRect = null
+            return
+        }
+        val faces = result.get(CaptureResult.STATISTICS_FACES).orEmpty().map { f -> f.bounds.let { intArrayOf(it.left, it.top, it.right, it.bottom) } }
+        val big = ProRules.largestFace(faces)
+        val i = info ?: return
+        if (big == null) {
+            if (faceRect != null) { faceRect = null; applyRequest() }
+            return
+        }
+        val centre = (big[0] + big[2]) / 2 to (big[1] + big[3]) / 2
+        // follow the face only when it has moved a fair way: re-sending the request on every frame would make the picture hunt
+        if (faceRect == null || abs(centre.first - faceCentre.first) > i.activeWidth / 16 || abs(centre.second - faceCentre.second) > i.activeHeight / 16) {
+            faceCentre = centre
+            faceRect = MeteringRectangle(big[0], big[1], big[2] - big[0], big[3] - big[1], MeteringRectangle.METERING_WEIGHT_MAX - 1)
+            applyRequest()
+        }
     }
 
     private fun start(keepHs: Boolean = false) {
@@ -371,7 +480,10 @@ class CameraEngine(context: Context) {
                 format = PhotoRules.chooseFormat(wantFacing == Facing.FRONT, wantPrefs.mirrorSelfie, wantPrefs.heif, wantPrefs.ultraHdr, supported)
                 val (sw, sh) = PhotoRules.chooseStillSize(stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
                 reader = ImageReader.newInstance(sw, sh, imageFormat(format), 2).also { it.setOnImageAvailableListener(::onImage, handler) }
+                val raw = rawSizeOf(chars, map)
+                if (wantPrefs.raw && raw != null) rawReader = ImageReader.newInstance(raw.first, raw.second, ImageFormat.RAW_SENSOR, 2).also { it.setOnImageAvailableListener(::onRawImage, handler) }
             }
+            this.chars = chars
 
             afRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0
             aeRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0
@@ -385,6 +497,7 @@ class CameraEngine(context: Context) {
                 active.width(), active.height(), chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f, evRange?.lower ?: 0, evRange?.upper ?: 0,
                 caps, chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
                 chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true,
+                proCaps(chars, map),
             )
             texture.setDefaultBufferSize(w, h)
             surface = Surface(texture)
@@ -442,7 +555,7 @@ class CameraEngine(context: Context) {
             val outputs = when {
                 record != null -> listOf(OutputConfiguration(preview), OutputConfiguration(record)) // high-speed: preview and recording surface
                 video != null -> listOf(OutputConfiguration(preview).apply { video.hdr?.let { dynamicRangeProfile = it.camera } })
-                else -> listOf(OutputConfiguration(preview), OutputConfiguration(still!!))
+                else -> listOfNotNull(OutputConfiguration(preview), OutputConfiguration(still!!), rawReader?.let { OutputConfiguration(it.surface) })
             }
             camera.createCaptureSession(
                 SessionConfiguration(
@@ -472,6 +585,11 @@ class CameraEngine(context: Context) {
                         override fun onConfigureFailed(s: CameraCaptureSession) {
                             if (mine != generation) return
                             if (record != null) return hsFailed("the camera refused the high-speed session", mine)
+                            if (rawReader != null) { // RAW next to the preview and the JPEG was refused: go on without it, never a dead viewfinder
+                                wantPrefs = StillPrefs(wantPrefs.heif, wantPrefs.ultraHdr, wantPrefs.mirrorSelfie, raw = false)
+                                listener?.onRawRefused()
+                                return start()
+                            }
                             // a refused 10-bit or Ultra Steady choice is dropped once, so the viewfinder still comes up
                             if (video != null && (video.hdr != null || video.stabilisation == 2)) {
                                 val what = if (video.hdr != null) "10-bit HDR is not available at this quality" else "Ultra Steady is not available at this quality"
@@ -528,6 +646,7 @@ class CameraEngine(context: Context) {
             r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it.stabilisation)
             if (info?.hasAwbLock == true) r.set(CaptureRequest.CONTROL_AWB_LOCK, awbLock)
         }
+        applyPro(r, still = false)
         try {
             s.setRepeatingRequest(r.build(), previewCallback, handler)
         } catch (_: Exception) {
@@ -574,6 +693,7 @@ class CameraEngine(context: Context) {
     /** Watches the preview frames: while a flash photo waits for the metering to finish, this decides when to shoot. */
     private val previewCallback = object : CameraCaptureSession.CaptureCallback() {
         override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+            watch(result)
             val seen = when (result.get(CaptureResult.CONTROL_AF_STATE)) {
                 CaptureResult.CONTROL_AF_STATE_ACTIVE_SCAN, CaptureResult.CONTROL_AF_STATE_PASSIVE_SCAN -> Focus.SEARCHING
                 CaptureResult.CONTROL_AF_STATE_FOCUSED_LOCKED, CaptureResult.CONTROL_AF_STATE_PASSIVE_FOCUSED -> Focus.FOCUSED
@@ -603,8 +723,13 @@ class CameraEngine(context: Context) {
         val out = reader ?: return finishShot("The camera is not ready")
         val s = session ?: return finishShot("The camera is not ready")
         try {
+            val rawOut = rawReader?.takeIf { shot.format.wantsRaw }
+            needRaw = rawOut != null
+            needJpeg = rawOut == null || shot.format.wantsJpeg
+            rawResult = null
             val b = cam.createCaptureRequest(CameraDevice.TEMPLATE_STILL_CAPTURE).apply {
-                addTarget(out.surface)
+                if (needJpeg) addTarget(out.surface)
+                rawOut?.let { addTarget(it.surface) }
                 common(this)
                 set(CaptureRequest.CONTROL_AE_MODE, aeMode(shot.flash))
                 set(CaptureRequest.FLASH_MODE, if (shot.flash == Flash.TORCH && hasFlash) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
@@ -613,10 +738,15 @@ class CameraEngine(context: Context) {
                 if (qualityNoise) set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY)
                 if (qualityEdge) set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_HIGH_QUALITY)
                 shot.location?.let { set(CaptureRequest.JPEG_GPS_LOCATION, it) }
+                applyPro(this, still = true)
             }
             s.capture(b.build(), object : CameraCaptureSession.CaptureCallback() {
                 override fun onCaptureStarted(session: CameraCaptureSession, request: CaptureRequest, timestamp: Long, frameNumber: Long) {
                     listener?.onShutter()
+                }
+
+                override fun onCaptureCompleted(session: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
+                    if (needRaw) { rawResult = result; tryDng() }
                 }
 
                 override fun onCaptureFailed(session: CameraCaptureSession, request: CaptureRequest, failure: CaptureFailure) {
@@ -634,15 +764,57 @@ class CameraEngine(context: Context) {
         try {
             val buffer = image.planes[0].buffer
             val bytes = ByteArray(buffer.remaining()).also { buffer.get(it) }
-            if (shot != null) listener?.onPhoto(Photo(bytes, format, shot.jpegOrientation, mirrored = wantFacing == Facing.FRONT && wantPrefs.mirrorSelfie && format == StillFormat.JPEG, squareCrop = shot.squareCrop))
+            if (shot != null && needJpeg) listener?.onPhoto(Photo(bytes, format, shot.jpegOrientation, mirrored = wantFacing == Facing.FRONT && wantPrefs.mirrorSelfie && format == StillFormat.JPEG, squareCrop = shot.squareCrop))
         } finally {
             image.close()
         }
-        finishShot(null)
+        needJpeg = false
+        if (!needRaw) finishShot(null)
+    }
+
+    /** The RAW picture arrived; it waits for the result that describes it (a DNG needs both). */
+    private fun onRawImage(r: ImageReader) {
+        val image = try { r.acquireNextImage() } catch (_: Exception) { null } ?: return
+        if (!needRaw || pending == null) return image.close()
+        rawImage?.close()
+        rawImage = image
+        tryDng()
+    }
+
+    /** Once the RAW picture and its capture result are both here, writes the DNG and hands it over like a photo. */
+    private fun tryDng() {
+        val image = rawImage ?: return
+        val result = rawResult ?: return
+        val shot = pending
+        val characteristics = chars
+        rawImage = null
+        rawResult = null
+        needRaw = false
+        try {
+            if (shot != null && characteristics != null) {
+                val out = java.io.ByteArrayOutputStream(image.width * image.height * 2 + 65536)
+                DngCreator(characteristics, result).use { dng ->
+                    dng.setOrientation(PhotoRules.exifOrientation(shot.jpegOrientation, mirrored = wantFacing == Facing.FRONT && wantPrefs.mirrorSelfie))
+                    shot.location?.let { dng.setLocation(it) }
+                    dng.writeImage(out, image)
+                }
+                listener?.onPhoto(Photo(out.toByteArray(), StillFormat.DNG, shot.jpegOrientation, mirrored = false, squareCrop = false))
+            }
+        } catch (e: Exception) {
+            listener?.onFailed("Could not write the RAW file")
+        } finally {
+            image.close()
+        }
+        if (!needJpeg) finishShot(null)
     }
 
     private fun finishShot(error: String?) {
         pending = null
+        needJpeg = false
+        needRaw = false
+        try { rawImage?.close() } catch (_: Exception) { }
+        rawImage = null
+        rawResult = null
         phase = Phase.NONE
         capturing = false
         if (error != null) listener?.onFailed(error)
@@ -654,6 +826,7 @@ class CameraEngine(context: Context) {
         StillFormat.JPEG -> ImageFormat.JPEG
         StillFormat.JPEG_R -> ImageFormat.JPEG_R
         StillFormat.HEIC -> ImageFormat.HEIC
+        StillFormat.DNG -> ImageFormat.RAW_SENSOR
     }
 
     // ---- errors and shutdown ----
@@ -690,6 +863,11 @@ class CameraEngine(context: Context) {
         try { device?.close() } catch (_: Exception) { }
         try { surface?.release() } catch (_: Exception) { }
         try { reader?.close() } catch (_: Exception) { }
+        try { rawImage?.close() } catch (_: Exception) { }
+        try { rawReader?.close() } catch (_: Exception) { }
+        rawImage = null
+        rawResult = null
+        rawReader = null
         if (!keepHs) {
             hsRecord = null
             hsCameraId = null
@@ -701,6 +879,36 @@ class CameraEngine(context: Context) {
         request = null
         surface = null
         reader = null
+    }
+
+    /** The largest RAW_SENSOR size, or null when the camera has no RAW. */
+    private fun rawSizeOf(chars: CameraCharacteristics, map: android.hardware.camera2.params.StreamConfigurationMap): Pair<Int, Int>? {
+        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
+        if (CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_RAW !in caps || !map.isOutputSupportedFor(ImageFormat.RAW_SENSOR)) return null
+        return map.getOutputSizes(ImageFormat.RAW_SENSOR)?.maxByOrNull { it.width.toLong() * it.height }?.let { it.width to it.height }
+    }
+
+    /** What the camera allows for manual control (read when the camera opens). A control the camera cannot do gets an empty range. */
+    private fun proCaps(chars: CameraCharacteristics, map: android.hardware.camera2.params.StreamConfigurationMap): ProCaps {
+        val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES)?.toSet().orEmpty()
+        val manual = CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_SENSOR in caps
+        val iso = if (manual) chars.get(CameraCharacteristics.SENSOR_INFO_SENSITIVITY_RANGE) else null
+        val exposure = if (manual) chars.get(CameraCharacteristics.SENSOR_INFO_EXPOSURE_TIME_RANGE) else null
+        val post = CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING in caps
+        val m1 = chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)
+        val m2 = chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2) ?: m1
+        fun rows(t: android.hardware.camera2.params.ColorSpaceTransform) = List(9) { t.getElement(it % 3, it / 3).toFloat() }
+        val ill1 = chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT1)
+        val ill2 = chars.get(CameraCharacteristics.SENSOR_REFERENCE_ILLUMINANT2)?.toInt() ?: ill1
+        val cal = if (m1 != null && m2 != null && ill1 != null && ill2 != null) ProRules.ColorCal(rows(m1), rows(m2), ill1, ill2) else null
+        return ProCaps(
+            isoMin = iso?.lower ?: 0, isoMax = iso?.upper ?: 0, exposureMinNs = exposure?.lower ?: 0, exposureMaxNs = exposure?.upper ?: 0,
+            minFocusDiopters = if (manual) chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f else 0f,
+            awbModes = chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES)?.toSet().orEmpty(), manualPost = post,
+            rawSize = rawSizeOf(chars, map),
+            faceDetect = chars.get(CameraCharacteristics.STATISTICS_INFO_AVAILABLE_FACE_DETECT_MODES)?.contains(CaptureRequest.STATISTICS_FACE_DETECT_MODE_SIMPLE) == true,
+            colorCal = cal,
+        )
     }
 
     private val capsCache = HashMap<Facing, VideoCaps>()

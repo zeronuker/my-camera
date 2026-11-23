@@ -17,6 +17,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -57,13 +63,16 @@ import kotlin.math.roundToInt
 
 /** The shooting modes that exist so far, in the order of the mode strip (the stock order keeps VIDEO next to PHOTO). */
 internal enum class Mode(val label: String, val style: VideoStyle?) {
+    MASTER("MASTER", null),
     VIDEO("VIDEO", VideoStyle.NORMAL),
     PHOTO("PHOTO", null),
     SLOMO("SLO-MO", VideoStyle.SLOMO),
     TIMELAPSE("TIME-LAPSE", VideoStyle.TIMELAPSE),
+    PROVIDEO("PRO VIDEO", VideoStyle.NORMAL),
     ;
 
     val isVideo get() = style != null
+    val isMaster get() = this == MASTER
 
     /** The neighbour in the strip (only among the [shown] modes), or null at its ends. */
     fun step(by: Int, shown: List<Mode> = entries): Mode? = shown.getOrNull(shown.indexOf(this) + by)
@@ -83,8 +92,14 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
     val current by rememberUpdatedState(selected)
     val on by rememberUpdatedState(enabled)
     val list by rememberUpdatedState(shown)
+    // more names than fit: the strip scrolls by itself so the chosen name sits in the middle
+    val scroll = rememberScrollState()
+    var viewWidth by remember { mutableIntStateOf(0) }
+    LaunchedEffect(selected, spot, viewWidth) {
+        if (spot != null && viewWidth > 0) scroll.animateScrollTo((spot.first + spot.second / 2 - viewWidth / 2).roundToInt().coerceAtLeast(0), tween(MOTION_MS))
+    }
     Box(
-        Modifier.pointerInput(Unit) {
+        Modifier.fillMaxWidth().onSizeChanged { viewWidth = it.width }.pointerInput(Unit) {
             var total = 0f
             detectHorizontalDragGestures(
                 onDragStart = { total = 0f },
@@ -92,20 +107,23 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
                 onHorizontalDrag = { _, dx -> total += dx },
             )
         },
+        Alignment.Center,
     ) {
-        if (spot != null) {
-            Box(
-                Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(36.dp).clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.16f)),
-            )
-        }
-        Row(Modifier.height(36.dp)) {
-            shown.forEach { m ->
+        Box(Modifier.horizontalScroll(scroll, enabled = false)) {
+            if (spot != null) {
                 Box(
-                    Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled && m != selected) { onSelect(m) }
-                        .onGloballyPositioned { spots[m.ordinal] = it.positionInParent().x - with(density) { 14.dp.toPx() } to it.size.width + with(density) { 28.dp.toPx() } },
-                    Alignment.Center,
-                ) { Text(m.label, style = monoStyle(glide(m == selected, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp)) }
+                    Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(36.dp).clip(CircleShape)
+                        .background(Color.White.copy(alpha = 0.16f)),
+                )
+            }
+            Row(Modifier.height(36.dp)) {
+                shown.forEach { m ->
+                    Box(
+                        Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled && m != selected) { onSelect(m) }
+                            .onGloballyPositioned { spots[m.ordinal] = it.positionInParent().x - with(density) { 14.dp.toPx() } to it.size.width + with(density) { 28.dp.toPx() } },
+                        Alignment.Center,
+                    ) { Text(m.label, maxLines = 1, softWrap = false, style = monoStyle(glide(m == selected, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp)) }
+                }
             }
         }
     }
