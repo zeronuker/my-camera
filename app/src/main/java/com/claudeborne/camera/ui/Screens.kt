@@ -65,6 +65,7 @@ fun Root() {
     AnimatedContent(screen, transitionSpec = { fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "screen") { s ->
         when (s) {
             Screen.SPLASH -> Box(Modifier.fillMaxSize().background(DarkCb.surface0), Alignment.Center) {
+                SystemBarIcons(darkIcons = false)
                 Text("CAMERA", style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
             }
             Screen.CAMERA -> CameraScreen { screen = Screen.SETTINGS }
@@ -76,18 +77,10 @@ fun Root() {
     UpdateDialog()
 }
 
-/** Empty viewfinder for now (Phase 1 builds the camera): always dark, as the stock viewfinder is. */
-@Composable
-private fun CameraScreen(onSettings: () -> Unit) {
-    Box(Modifier.fillMaxSize().background(Color.Black).windowInsetsPadding(WindowInsets.safeDrawing)) {
-        Text("VIEWFINDER COMES IN PHASE 1", Modifier.align(Alignment.Center), style = monoStyle(DarkCb.inkDim, 2.2.sp))
-        BrandButton("SETTINGS", Modifier.align(Alignment.TopEnd).padding(12.dp), cb = DarkCb, onClick = onSettings)
-    }
-}
-
 @Composable
 private fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
     val cb = LocalCb.current
+    SystemBarIcons(darkIcons = !cb.isDark)
     Column(Modifier.fillMaxSize().cbGrid(cb).windowInsetsPadding(WindowInsets.safeDrawing)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
             BrandButton("BACK", cb = cb, onClick = onBack)

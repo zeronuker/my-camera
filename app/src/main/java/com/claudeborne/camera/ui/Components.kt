@@ -183,3 +183,16 @@ internal fun ActionText(label: String, color: Color, onClick: () -> Unit) {
         style = monoStyle(animateColorAsState(color, tween(MOTION_FAST_MS), label = "action").value, 2.2.sp),
     )
 }
+
+/** Status and navigation bar icons: dark ones for a light screen, light ones for a dark screen (the viewfinder is always dark). */
+@Composable
+internal fun SystemBarIcons(darkIcons: Boolean) {
+    val view = androidx.compose.ui.platform.LocalView.current
+    androidx.compose.runtime.SideEffect {
+        val window = (view.context as? android.app.Activity)?.window ?: return@SideEffect
+        androidx.core.view.WindowCompat.getInsetsController(window, view).apply {
+            isAppearanceLightStatusBars = darkIcons
+            isAppearanceLightNavigationBars = darkIcons
+        }
+    }
+}

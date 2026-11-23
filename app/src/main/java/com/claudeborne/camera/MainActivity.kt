@@ -12,7 +12,9 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        if (savedInstanceState == null) Updater.check(this, manual = false)
+        // "Camera Dev" (debug) is a different app from the release APK the updater offers, so it never checks
+        val debug = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (savedInstanceState == null && !debug) Updater.check(this, manual = false)
         setContent { ClaudeBorneTheme { Root() } }
     }
 }
