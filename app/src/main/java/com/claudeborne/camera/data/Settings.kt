@@ -102,6 +102,10 @@ object Settings {
     var lutPreview by Pref("lutPreview", true) // Pro video: show the normal look on screen while the file is flat
     var shutterAngle by Pref("shutterAngle", false) // Pro video: show the shutter as an angle instead of 1/x
 
+    // Dual view (Phase 9)
+    var dualLayout by Pref("dualLayout", 0) // index into dual/Layout: 0 picture in picture, 1 top and bottom, 2 side by side
+    var dualSeparate by Pref("dualSeparate", false) // Dual view recording: false one combined file, true one file per camera
+
     // Retouch (Phase 8)
     var retouch by Pref("retouch", "") // the eleven sliders as text (face/RetouchStore); empty = all off
     var distortionFix by Pref("distortionFix", true) // straighten faces stretched near the edges of the ultra wide view

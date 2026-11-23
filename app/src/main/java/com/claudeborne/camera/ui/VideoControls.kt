@@ -77,7 +77,12 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     PROVIDEO("PRO VIDEO", VideoStyle.NORMAL),
     TILTSHIFT("TILT-SHIFT", null),
     UNDERWATER("UNDERWATER", null),
+    DUAL("DUAL", null),
+    QUAD("QUAD", null),
     ;
+
+    /** Dual and Quad view: several cameras at once, drawn as one picture. */
+    val multi get() = this == DUAL || this == QUAD
 
     val isVideo get() = style != null
     val isMaster get() = this == MASTER

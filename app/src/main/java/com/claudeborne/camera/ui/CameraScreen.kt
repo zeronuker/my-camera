@@ -121,6 +121,10 @@ import kotlinx.coroutines.currentCoroutineContext
 import android.hardware.camera2.CameraExtensionCharacteristics
 import com.claudeborne.camera.scan.LensShare
 import com.claudeborne.camera.scan.FrameScanner
+import com.claudeborne.camera.camera.MultiCameraEngine
+import com.claudeborne.camera.dual.DualRules
+import com.claudeborne.camera.dual.Layout
+import com.claudeborne.camera.dual.Pip
 import com.claudeborne.camera.scan.QrRules
 import com.claudeborne.camera.scan.TextRules
 import androidx.activity.compose.BackHandler
@@ -208,6 +212,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val sessionShots = remember { mutableStateListOf<SessionShot>() } // lock-screen launch: the only pictures its viewer may show
     var viewerOpen by remember { mutableStateOf(false) }
     val isVideo = mode.isVideo
+    val multi = mode.multi
     val isMaster = mode.isMaster
     val plainVideo = mode == Mode.VIDEO || mode == Mode.PROVIDEO // normal frame rates (no 120/240 fps, no time-lapse, no slo-mo)
     val proMode = (isMaster && AppSettings.proOn) || mode == Mode.PROVIDEO // the manual controls are on show
@@ -216,6 +221,15 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var formatOpen by remember { mutableStateOf(false) }
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
     val scanner = remember { FrameScanner(context.applicationContext) }
+    // Dual and Quad view: the rear and the front camera (and more lenses) streaming together, drawn as one picture
+    val multiEngine = remember { MultiCameraEngine(context.applicationContext) }
+    val multiCams = remember { multiEngine.cameras() }
+    var dualLayout by remember { mutableStateOf(Layout.entries[AppSettings.dualLayout.coerceIn(0, Layout.entries.lastIndex)]) }
+    var dualSwap by remember { mutableStateOf(false) }
+    var pip by remember { mutableStateOf(Pip()) }
+    var pipDragging by remember { mutableStateOf(false) }
+    var quadRear by remember { mutableIntStateOf(minOf(3, multiCams?.physical?.size ?: 0)) }
+    var multiReady by remember { mutableStateOf(false) }
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
     var ring by remember { mutableStateOf<ClipRing?>(null) } // Live photo: the clip encoder that runs while it is on
     var liveClip by remember { mutableStateOf<Deferred<ByteArray?>?>(null) } // the clip for the photo being taken
@@ -289,7 +303,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     // the viewfinder band: the whole screen for "Full", otherwise a box under the top buttons that glides between shapes
     val topInset = WindowInsets.safeDrawing.getTop(density)
     val reserve = with(density) { 64.dp.roundToPx() }
-    val shape = if (isVideo) Aspect.R16_9 else aspect // video is always the 16:9 shape, as in the stock app
+    val shape = if (isVideo || multi) Aspect.R16_9 else aspect // video is always the 16:9 shape, as in the stock app
     val targetTop = if (shape == Aspect.FULL) 0 else topInset + reserve
     val targetHeight = if (shape == Aspect.FULL) viewSize.height else AspectMath.boxHeight(shape, viewSize.width, (viewSize.height - targetTop).coerceAtLeast(1))
     val boxTop by animateIntAsState(targetTop, tween(MOTION_MS), label = "box top")
@@ -306,7 +320,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> { permitted = hasCamera(context); resumed = true; glView?.onResume() }
-                Lifecycle.Event.ON_PAUSE -> { leaveHooks[0](); resumed = false; showedPicture = false; runJob?.cancel(); engine.close(); texture = null; glView?.onPause() }
+                Lifecycle.Event.ON_PAUSE -> { leaveHooks[0](); resumed = false; showedPicture = false; runJob?.cancel(); engine.close(); multiEngine.close(); multiReady = false; texture = null; glView?.onPause() }
                 else -> Unit
             }
         }
@@ -317,6 +331,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             engine.close() // waits for a photo still on its way; the listener below must still be set until then
             engine.listener = null
             engine.release()
+            multiEngine.close()
+            multiEngine.release()
             sound.release()
             scanner.close()
         }
@@ -386,7 +402,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     }
     val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (multiCams?.physical?.size ?: 0) >= 2 }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -396,7 +412,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
     }
     // the look: filter, Soft light and styles (Master), scenes (Video), Underwater and Tilt-shift; 120 and 240 fps video bypasses the GL pipeline, so it gets none
-    val lookFilterOk = !isMaster && !mode.oneShot && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
+    val lookFilterOk = !isMaster && !mode.oneShot && !multi && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
     // Retouch (faces smoothed and reshaped): Photo, Portrait and normal video; the straightening of ultra wide faces needs the rear camera below 1x
     val retouchOk = lookFilterOk && (mode == Mode.PHOTO || mode == Mode.PORTRAIT || mode == Mode.VIDEO)
     val retouchBase = com.claudeborne.camera.face.RetouchStore.decode(AppSettings.retouch)
@@ -421,15 +437,60 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         )
     } else null
     LaunchedEffect(caps, isVideo, picked == null) { if (isVideo && caps != null && picked == null) say("This camera cannot record video") }
-    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw, extWanted, liveOn) {
+    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup, wantRaw, extWanted, liveOn, multi) {
         val st = texture
         val view = glView
-        if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null)) {
+        if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null) && !multi) {
             // camera sizes are listed landscape, so the screen shape is its long side over its short side (about 2.2 on this phone)
             renderer.freeze() // every reopen (mode, quality, camera, HDR) keeps the last picture until the new one streams
             engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif && !liveOn, AppSettings.ultraHdr && !liveOn, AppSettings.mirrorSelfie, raw = wantRaw), setup, extWanted)
         }
     }
+    // Dual and Quad view: the normal camera is closed and the multi-camera engine streams into the renderer's textures; a refusal always ends in a working camera
+    LaunchedEffect(permitted, resumed, texture, mode, quadRear) {
+        val st = texture
+        if (!multi || !permitted || !resumed || st == null || glView == null) return@LaunchedEffect
+        if (multiCams == null) { say("This phone cannot use two cameras at once"); mode = Mode.PHOTO; return@LaunchedEffect }
+        multiReady = false
+        renderer.freeze()
+        withContext(Dispatchers.IO) { engine.close() }
+        val rear = if (mode == Mode.QUAD) quadRear else 1
+        renderer.makeSources(rear) { extra ->
+            multiEngine.open(rear, listOf(st) + extra, { infos, message ->
+                scope.launch {
+                    if (infos == null) {
+                        val lower = if (mode == Mode.QUAD) DualRules.stepDown(quadRear) else null
+                        if (lower != null) { say("${message ?: "Not possible"}. Trying $lower rear cameras and the front."); quadRear = lower }
+                        else { say("${message ?: "Not possible"}. The normal camera is back."); mode = Mode.PHOTO }
+                    } else {
+                        renderer.sensorOrientation = infos[0].sensor
+                        renderer.bufferWidth = infos[0].width
+                        renderer.bufferHeight = infos[0].height
+                        renderer.mirror = false
+                        for (i in 1 until infos.size) renderer.setSource(i, infos[i].sensor, infos[i].width, infos[i].height)
+                        renderer.resetFrameCounts()
+                        multiReady = true
+                        renderer.unfreeze()
+                        showedPicture = true
+                    }
+                }
+            }, { text -> scope.launch { say("$text. The normal camera is back."); mode = Mode.PHOTO } })
+        }
+    }
+    // leaving Dual / Quad view: the cameras are released and the extra textures dropped; the normal camera reopens by itself
+    LaunchedEffect(multi) {
+        if (!multi) {
+            renderer.composite = null
+            multiReady = false
+            withContext(Dispatchers.IO) { multiEngine.close() }
+            renderer.makeSources(0) { }
+        }
+    }
+    val dualOutAspect = if (targetHeight > 0) viewSize.width.toFloat() / targetHeight else 0.5625f
+    val dualTarget = if (!multi) emptyList() else if (mode == Mode.QUAD) DualRules.quad(quadRear + 1, quadRear, AppSettings.mirrorSelfie)
+        else DualRules.two(dualLayout, dualSwap, pip, dualOutAspect, AppSettings.mirrorSelfie)
+    val dualTiles = animateTiles(dualTarget, animate = !pipDragging)
+    LaunchedEffect(dualTiles, multi, multiReady) { renderer.composite = if (multi && multiReady) dualTiles else null; glView?.requestRender() }
     // Pro: the manual choices go to the camera; the assistants go to the picture (screen only, never into a photo or video)
     LaunchedEffect(effectivePro) { engine.setPro(effectivePro) }
     LaunchedEffect(look) { renderer.look = look; glView?.requestRender() }
@@ -1039,6 +1100,29 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
 
+    /** Dual and Quad view: one picture of the composite exactly as it is on screen, saved as a JPEG in DCIM/Camera. */
+    fun dualPhoto() {
+        if (!multiReady || viewSize.width == 0) return
+        shutterTick++
+        if (AppSettings.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        renderer.snapshot(1080, 1920, 0, false) { bitmap ->
+            if (bitmap == null) { say("Could not take the photo"); return@snapshot }
+            scope.launch(Dispatchers.IO) {
+                val bytes = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
+                bitmap.recycle()
+                withContext(Dispatchers.Main) {
+                    PhotoSaver.save(context, bytes, StillFormat.JPEG, null, false, System.currentTimeMillis(), null, null) { result ->
+                        result.onSuccess { uri ->
+                            if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
+                            AppSettings.rememberLastPhoto(uri.toString())
+                            scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                        }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
+                    }
+                }
+            }
+        }
+    }
+
     // Google Lens: the current frame goes to the Google app; the button exists only where the Google app can take it
     val lensOk = remember { LensShare.available(context) }
     fun openLens() {
@@ -1100,6 +1184,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
 
     /** Shutter tap: a timer run, an interval run or a single photo; a second tap while one is running stops it. */
     fun shutterTap(timer: Int? = null) {
+        if (multi) return dualPhoto()
         if (mode.isVideo) return recordTap()
         menu = Menu.NONE
         evOpen = false
@@ -1177,6 +1262,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         return PreviewMath.map(pos.x / viewSize.width, 1f - y / boxHeight, i.sensorOrientation, facing == Facing.FRONT, i.previewWidth, i.previewHeight, viewSize.width, boxHeight)
     }
     fun focus(pos: Offset, lock: Boolean) {
+        if (multi) return
         val picture = toPicture(pos) ?: return
         engine.focusAt(picture.first, picture.second, lock)
         focusPoint = pos
@@ -1211,11 +1297,11 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     onTap = { pos ->
                         if (menu != Menu.NONE || evOpen || qualityOpen) { menu = Menu.NONE; evOpen = false; qualityOpen = false }
                         else if (AppSettings.tapToCapture && !mode.isVideo) shutterTap()
-                        else focus(pos, lock = false)
+                        else if (!multi) focus(pos, lock = false)
                     },
                     onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d, shownModes)?.let(::selectMode) },
                     onLongPress = { pos -> if (menu == Menu.NONE) focus(pos, lock = true) },
-                    onZoom = { change -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.resize(tilt, change) else { zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true } },
+                    onZoom = { change -> if (multi) Unit else if (mode == Mode.TILTSHIFT) tilt = TiltRules.resize(tilt, change) else { zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true } },
                     onTwist = { deg -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.clamp(tilt.copy(angle = tilt.angle - deg)) },
                     onExposureDrag = { dy -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.clamp(tilt.copy(centre = tilt.centre + dy / boxHeight.coerceAtLeast(1))) else setEv(ev + dy / 150f) },
                     dragEnabled = { focusPoint != null || mode == Mode.TILTSHIFT },
@@ -1249,16 +1335,24 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     TiltBand(tilt, Modifier.fillMaxSize())
                 }
             }
+            if (mode == Mode.DUAL && dualLayout == Layout.PIP && multiReady) dualTiles.firstOrNull { it.border }?.let { small ->
+                PipHandle(
+                    small, boxTop, viewSize.width, boxHeight,
+                    onMove = { dx, dy -> pip = DualRules.clamp(pip.copy(cx = pip.cx + dx, cy = pip.cy + dy), dualOutAspect) },
+                    onScale = { f -> pip = DualRules.clamp(pip.copy(w = pip.w * f), dualOutAspect) },
+                    onDrag = { pipDragging = it }, onTap = { dualSwap = !dualSwap },
+                )
+            }
             focusPoint?.let { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                TopPill(
+                if (!multi) TopPill(
                     flash, ev, evOpen, ::cycleFlash,
                     { if (manualExposure) say("EV is off while ISO and shutter are set by hand") else { evOpen = !evOpen; menu = Menu.NONE; qualityOpen = false; formatOpen = false; proOpen = null } },
                     Modifier.align(Alignment.TopStart).padding(16.dp), showFlash = !(isVideo && front),
                 )
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
-                Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                if (!multi) Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
                     Visible(portraitOwnNow && !readingText, enter = popEnter, exit = popExit) {
                         QualityPill(PortraitRules.label(AppSettings.portraitF), qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
@@ -1395,7 +1489,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             }
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
                             Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
-                                Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
+                                if (multi) {
+                                    if (mode == Mode.DUAL) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0)
+                                } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                     if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else if (retouchOk) LookButton(Icon.RETOUCH, retouchBase.sliders) { menu = Menu.RETOUCH; evOpen = false; proOpen = null; qualityOpen = false } else Spacer(Modifier.size(44.dp))
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->
                                         macro = false
@@ -1420,6 +1516,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             Box(contentAlignment = Alignment.Center) {
                                 if (isVideo) {
                                     RecordButton(recording, enabled = state == CameraEngine.State.Streaming && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
+                                } else if (multi) {
+                                    Shutter(enabled = multiReady, running = false, onTap = ::dualPhoto, onHoldStart = {}, onHoldEnd = {})
                                 } else {
                                     Shutter(
                                         enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
@@ -1428,7 +1526,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }
                             }
-                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
+                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO || multi) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
                                 when (slot) {
                                     0 -> RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
                                     1 -> RoundButton(size = 52, onClick = ::togglePause) { CbIcon(if (recPaused) Icon.PLAY else Icon.PAUSE, if (recPaused) DarkCb.mint else Color.White, size = 26.dp) }

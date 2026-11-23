@@ -48,7 +48,20 @@ class PreviewRenderer(
         val log: Boolean = false,
         /** A transparent picture of the video's size laid over every frame (the watermark); null for none. */
         val overlay: Bitmap? = null,
+        /** Dual view: -1 draws what the screen shows (the composite, or the one camera); 0 and up draw only that camera, full frame (a separate file per camera). */
+        val source: Int = -1,
     )
+
+    /** One more camera stream (dual and quad view): its own texture, the transform of its latest frame and what is needed to crop it. Source 0 is the normal camera texture. */
+    class Src(val tex: Int, val st: SurfaceTexture) {
+        val transform = FloatArray(16).also { android.opengl.Matrix.setIdentityM(it, 0) }
+        val pending = AtomicInteger(0)
+        val frames = AtomicInteger(0)
+        @Volatile var hasFrame = false
+        @Volatile var sensor = 90
+        @Volatile var bufW = 1440
+        @Volatile var bufH = 1080
+    }
 
     private class Target(val display: EGLDisplay, val context: EGLContext, val surface: EGLSurface)
 
@@ -101,6 +114,11 @@ class PreviewRenderer(
     /** Receives small, look-free copies of the whole upright frame (bottom row first) about ten times a second while set, for finding faces. */
     @Volatile var faceSink: ((ByteArray, Int, Int) -> Unit)? = null
     private var faceAt = 0L
+
+    /** Dual / quad view: the extra camera streams (sources 1 and up) and where each camera sits on the picture; null composite = a single camera. */
+    @Volatile private var extras: List<Src> = emptyList()
+    @Volatile var composite: List<com.claudeborne.camera.dual.Tile>? = null
+    private val mainFrames = AtomicInteger(0)
 
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
@@ -179,6 +197,34 @@ class PreviewRenderer(
         requestRender()
     }
 
+    /** Replaces the extra camera streams by [count] new ones (0 removes them); [ready] runs on the GL thread with their SurfaceTextures, source 1 first. */
+    fun makeSources(count: Int, ready: (List<SurfaceTexture>) -> Unit) = post {
+        extras.forEach { runCatching { it.st.release() } }
+        val ids = IntArray(count.coerceAtLeast(1))
+        if (count > 0) GLES20.glGenTextures(count, ids, 0)
+        extras = (0 until count).map { i ->
+            GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, ids[i])
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+            GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+            val src = Src(ids[i], SurfaceTexture(ids[i]))
+            src.st.setOnFrameAvailableListener { src.pending.incrementAndGet(); src.frames.incrementAndGet(); requestRender() }
+            src
+        }
+        ready(extras.map { it.st })
+    }
+
+    /** Tells the renderer how the picture of extra source [index] (1 and up) is turned and how big it is, so it can be cropped to its tile. */
+    fun setSource(index: Int, sensor: Int, width: Int, height: Int) {
+        extras.getOrNull(index - 1)?.let { it.sensor = sensor; it.bufW = width; it.bufH = height }
+    }
+
+    /** Frames delivered per camera since the last [resetFrameCounts], source 0 first. */
+    fun frameCounts(): List<Int> = listOf(mainFrames.get()) + extras.map { it.frames.get() }
+
+    fun resetFrameCounts() { mainFrames.set(0); extras.forEach { it.frames.set(0) } }
+
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         runCatching { surfaceTexture?.release() }
         hasFrame = false
@@ -222,8 +268,10 @@ class PreviewRenderer(
         GLES20.glPixelStorei(GLES20.GL_UNPACK_ALIGNMENT, 1)
         GLES20.glTexImage2D(GLES20.GL_TEXTURE_2D, 0, GLES20.GL_LUMINANCE, 1, 1, 0, GLES20.GL_LUMINANCE, GLES20.GL_UNSIGNED_BYTE, ByteBuffer.wrap(byteArrayOf(-1)))
         val st = SurfaceTexture(oesTexture)
+        extras = emptyList() // the textures of the old context are gone
         st.setOnFrameAvailableListener {
             pending.incrementAndGet()
+            mainFrames.incrementAndGet()
             val e = encoding ?: clip
             if (e == null) {
                 requestRender()
@@ -264,6 +312,7 @@ class PreviewRenderer(
         if (encoding == null && clip == null) { // while an encoder runs, its events take every frame (see encodeFrame)
             gotFrame = takeFrame(st)
             while (pending.get() > 0 && takeFrame(st)) { /* show the newest */ }
+            takeExtras()
         }
         takeSnapshot()
         val boxH = if (boxHeight in 1 until viewH) boxHeight else viewH // the picture is drawn only inside this band of the screen
@@ -315,6 +364,18 @@ class PreviewRenderer(
             true
         } catch (_: Exception) {
             false // the texture was released while the camera closed
+        }
+    }
+
+    /** Moves the newest waiting frame of every extra camera into its texture. */
+    private fun takeExtras() {
+        for (src in extras) {
+            var any = false
+            while (src.pending.get() > 0) {
+                src.pending.decrementAndGet()
+                try { src.st.updateTexImage(); src.st.getTransformMatrix(src.transform); any = true } catch (_: Exception) { break }
+            }
+            if (any) src.hasFrame = true
         }
     }
 
@@ -385,6 +446,7 @@ class PreviewRenderer(
         val second = clip
         if (main !== primary && second !== primary) { takeFrame(st); return } // that encoder ended: keep the texture moving for the screen
         if (!takeFrame(st)) return
+        takeExtras()
         val screen = EGL14.eglGetCurrentSurface(EGL14.EGL_DRAW)
         val screenRead = EGL14.eglGetCurrentSurface(EGL14.EGL_READ)
         val screenContext = EGL14.eglGetCurrentContext()
@@ -404,7 +466,10 @@ class PreviewRenderer(
         if (pts < 0) return
         if (!EGL14.eglMakeCurrent(t.display, t.surface, t.surface, t.context)) return
         GLES20.glViewport(0, 0, e.width, e.height)
-        drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), e.width, e.height, log = e.log)
+        val tiles = composite
+        if (e.source >= 0) drawSource(e.source, e.mirror, e.width, e.height, e.turn, e.log)
+        else if (tiles != null) drawComposite(tiles, e.width, e.height)
+        else drawOes(PreviewMath.matrix(sensorOrientation, e.mirror, bufferWidth, bufferHeight, e.width, e.height, e.turn), e.width, e.height, log = e.log)
         if (watermark && overlayTex != 0) drawOverlay()
         EGLExt.eglPresentationTimeANDROID(t.display, t.surface, pts)
         EGL14.eglSwapBuffers(t.display, t.surface)
@@ -428,7 +493,8 @@ class PreviewRenderer(
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, snapFbo)
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, snapTex, 0)
             GLES20.glViewport(0, 0, w, h)
-            drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn), w, h)
+            val tiles = composite
+            if (tiles != null) drawComposite(tiles, w, h) else drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn), w, h)
             val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)
@@ -445,11 +511,13 @@ class PreviewRenderer(
     }
 
     private fun drawLive(boxH: Int) {
+        val tiles = composite
+        if (tiles != null) return drawComposite(tiles, viewW, boxH)
         drawOes(PreviewMath.matrix(sensorOrientation, mirror, bufferWidth, bufferHeight, viewW, boxH), viewW, boxH, assist = true, log = viewLog)
     }
 
     /** Draws the current camera frame. [assist] adds the Pro assistants (screen only); [log] applies the flat log look. */
-    private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false, plain: Boolean = false) {
+    private fun drawOes(matrix: FloatArray, outW: Int, outH: Int, assist: Boolean = false, log: Boolean = false, plain: Boolean = false, src: Src? = null) {
         GLES20.glUseProgram(oesProgram)
         applyLook(outW, outH, if (plain) Look.NONE else look, dofAllowed = !plain)
         GLES20.glUniform1f(GLES20.glGetUniformLocation(oesProgram, "uPeak"), if (assist && peaking) 1f else 0f)
@@ -459,11 +527,48 @@ class PreviewRenderer(
         val c = assistColor
         GLES20.glUniform3f(GLES20.glGetUniformLocation(oesProgram, "uAssist"), c[0], c[1], c[2])
         GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
-        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, oesTexture)
+        GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, src?.tex ?: oesTexture)
         GLES20.glUniform1i(GLES20.glGetUniformLocation(oesProgram, "uTex"), 0)
         GLES20.glUniformMatrix3fv(GLES20.glGetUniformLocation(oesProgram, "uM"), 1, false, matrix, 0)
-        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(oesProgram, "uSt"), 1, false, transform, 0)
+        GLES20.glUniformMatrix4fv(GLES20.glGetUniformLocation(oesProgram, "uSt"), 1, false, src?.transform ?: transform, 0)
         drawQuad(oesProgram)
+    }
+
+    /** Draws camera [index] (0 = the normal camera) filling the current output of [outW] x [outH], cropped to fit. */
+    private fun drawSource(index: Int, mirror: Boolean, outW: Int, outH: Int, turn: Int = 0, log: Boolean = false) {
+        val src = if (index == 0) null else extras.getOrNull(index - 1) ?: return
+        val sensor = src?.sensor ?: sensorOrientation
+        val bw = src?.bufW ?: bufferWidth
+        val bh = src?.bufH ?: bufferHeight
+        drawOes(PreviewMath.matrix(sensor, mirror, bw, bh, outW, outH, turn), outW, outH, log = log, src = src)
+    }
+
+    /** Draws every tile of a dual / quad picture into the current viewport (of [w] x [h]): black first, a mint line round tiles that ask for one. */
+    private fun drawComposite(tiles: List<com.claudeborne.camera.dual.Tile>, w: Int, h: Int) {
+        val vp = IntArray(4)
+        GLES20.glGetIntegerv(GLES20.GL_VIEWPORT, vp, 0)
+        GLES20.glEnable(GLES20.GL_SCISSOR_TEST)
+        GLES20.glScissor(vp[0], vp[1], vp[2], vp[3])
+        GLES20.glClearColor(0f, 0f, 0f, 1f)
+        GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+        val line = (w / 270).coerceAtLeast(2)
+        val c = assistColor
+        for (t in tiles) {
+            val x = vp[0] + (t.x * w).toInt()
+            val y = vp[1] + (t.y * h).toInt()
+            val tw = (t.w * w).toInt().coerceAtLeast(1)
+            val th = (t.h * h).toInt().coerceAtLeast(1)
+            if (t.border) {
+                GLES20.glScissor(x - line, y - line, tw + 2 * line, th + 2 * line)
+                GLES20.glClearColor(c[0], c[1], c[2], 1f)
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
+            }
+            GLES20.glViewport(x, y, tw, th)
+            GLES20.glScissor(x, y, tw, th)
+            drawSource(t.source, t.mirror, tw, th)
+        }
+        GLES20.glDisable(GLES20.GL_SCISSOR_TEST)
+        GLES20.glViewport(vp[0], vp[1], vp[2], vp[3])
     }
 
     /** Sets the look uniforms of the OES program (the program is already in use) and keeps the filter's table on texture unit 1. */
