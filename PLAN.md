@@ -25,6 +25,10 @@ part of a phase), ticks the checklist, and stops.
 | Location, shutter sound | Both in, each with a switch. |
 | Signing | Reuse my-gallerymanager's release keystore (same four secrets copied to the new repo). |
 | Updates | Same as my-gallerymanager: push to `main` → GitHub Action builds a signed APK → GitHub Release → the app offers it. |
+| Beta | **Beta 1 = end of Phase 3**: photo, video, lock-screen launch, gallery handoff, QS tile — usable as the daily camera. Phases 4–10 arrive as in-app updates on top. The stock camera stays installed as a fallback. |
+| Stock camera | **Never disable it.** Since Android 11, other apps' "take a photo for me" requests (`IMAGE_CAPTURE`, `VIDEO_CAPTURE`) go only to the pre-installed camera; if it is disabled those apps crash instead of falling back. Banking QR scans and face checks run their own in-app camera and are not affected by this app either way. |
+| Desktop preview | Android emulator on the PC (existing `android-35` x86_64 image; webcam as camera) for layout work, and **scrcpy** to mirror and control the real phone on the PC. Coding sessions take screenshots of either (`adb exec-out screencap -p`) and compare them with `docs/stock-reference/`. |
+| Dev build | Debug builds install as a separate app, **"Camera Dev"** (`com.claudeborne.camera.dev`, debug key), side by side with the release app, sent straight from the PC with `adb install` (USB or wireless debugging). Layout tweaks never need a push. |
 
 ## Feasibility tags
 
@@ -45,6 +49,7 @@ Same toolchain as my-gallerymanager, so builds are known to work:
 - Video: `MediaCodec` + `MediaMuxer` (not `MediaRecorder`), so frames can pass through the GL pipeline.
 - Settings: `SharedPreferences` + Compose state, same pattern as my-gallerymanager `data/Settings.kt`.
 - Saving: MediaStore, `DCIM/Camera/`, names `IMG_yyyyMMdd_HHmmss_SSS.jpg|heic|dng`, `VID_….mp4` (my-gallerymanager already treats `DCIM/Camera` as the camera album).
+- Build variants: **release** = arm64 only, signed with the shared keystore; `-Pemulator` also keeps x86_64 (same switch as my-gallerymanager). **debug** = `applicationIdSuffix ".dev"`, label "Camera Dev", arm64 + x86_64, so it runs on the phone and the emulator next to the release app. Every native library added later (OpenCV, LiteRT, MediaPipe) must ship x86_64 too, or be skipped on the emulator with its control hidden.
 
 Libraries, added only in the phase that needs them (each one needs the owner's OK when added):
 
@@ -92,7 +97,7 @@ Each phase ends with: tests green (where the repo has them), APK built, the owne
 | 0 | Skeleton, CI, updater, theme, **hardware probe** | Sonnet 5.5 medium to build; **Opus 5.5 high to read the probe report and update this plan** |
 | 1 | Photo mode core | Sonnet 5.5 medium |
 | 2 | Video, slow-mo, time-lapse | Sonnet 5.5 medium |
-| 3 | System integration + gallery handoff | Sonnet 5.5 medium |
+| 3 | System integration + gallery handoff → **Beta 1** | Sonnet 5.5 medium |
 | 4 | Master (Pro) photo + Pro video | Sonnet 5.5 medium (Opus if DNG/log gets stuck) |
 | 5 | Looks and overlays | Sonnet 5.5 medium |
 | 6 | Text, QR, Lens, doc scanner, gestures | Sonnet 5.5 medium (Opus for the doc scanner edge finder) |
@@ -106,7 +111,10 @@ Each phase ends with: tests green (where the repo has them), APK built, the owne
 Build:
 - Gradle project as above, ported theme/components/updater, splash, empty camera screen with a working Settings → About page (version, build number, CHECK FOR UPDATES).
 - `.github/workflows/build.yml`, signing from secrets, `camera-<versionCode>.apk` releases.
-- With the owner's OK at that moment: create public repo `zeronuker/my-camera`, add the four keystore secrets (owner supplies the `.jks` path and passwords locally), push.
+- With the owner's OK at that moment: create public repo `zeronuker/my-camera`, push. **The owner sets the four keystore secrets personally** (the session gives the exact `gh secret set …` commands; it never sees or types a password).
+- Build variants and `-Pemulator` switch as in Tech stack; "Camera Dev" debug app.
+- Desktop preview setup: create/reuse an AVD from the installed `android-35` x86_64 image with the webcam as camera; install scrcpy (download only with the owner's OK); walk the owner through enabling USB/wireless debugging on the phone. Show the loop once: build debug → `adb install` → screenshot → compare.
+- Crash log: uncaught exceptions are written to a file in app storage; Diagnostics shows the latest ones with a SHARE button. No third-party crash service.
 - **Diagnostics screen** (Settings → About → Diagnostics; it stays in the app afterwards). It collects and shows, and saves as `Download/camera-probe.json` with a SHARE button:
   - Every camera ID and every physical camera ID behind each logical camera: facing, focal length, aperture, sensor size, pixel array, min focus distance, hardware level, capabilities (MANUAL_SENSOR, RAW, LOGICAL_MULTI_CAMERA, ULTRA_HIGH_RESOLUTION_SENSOR, DYNAMIC_RANGE_TEN_BIT, CONSTRAINED_HIGH_SPEED_VIDEO, BURST_CAPTURE, STREAM_USE_CASE).
   - Output sizes per format: JPEG, HEIC, JPEG_R (Ultra HDR), RAW_SENSOR, YUV_420_888, PRIVATE; maximum-resolution sizes.
@@ -117,11 +125,14 @@ Build:
   - Which app currently answers `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `IMAGE_CAPTURE`, `VIDEO_CAMERA`.
 - Manifest already declares those camera intents, so the owner can set this app as default camera and test the power-button double-press (result recorded in the checklist below).
 
-Done when: APK installs; the app updates itself from a second CI build; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.**
+Done when: APK installs; the app updates itself from a second CI build; "Camera Dev" installs next to it from the PC and runs on the emulator; scrcpy shows the phone on the PC; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.**
 
 ### Phase 1 — photo mode core
 
-Viewfinder layout exactly as `01-photo-mode.jpg`, in the ClaudeBorne look:
+Viewfinder layout exactly as `01-photo-mode.jpg`, in the ClaudeBorne look. Buttons whose feature comes in a later phase (Live photo, Google Lens, retouch, filters, Soft light, etc.) stay hidden until that phase builds them.
+- First run: ask for camera, then microphone (on first video), then location (only if "Add location tags" is on). Denied → a clear ClaudeBorne screen explaining why, with a button to the app's system settings. Never a black viewfinder.
+- Errors handled, never a crash or frozen preview: camera busy in another app (message + retry when it is free), camera disconnected (reopen), overheating (`PowerManager` thermal status: warn, then lower video quality / stop recording safely), storage full (warn before capture), photo still saving when the app closes (MediaStore `IS_PENDING` write finishes in the background).
+- Camera released in `onPause` within a moment, so other apps (banking QR/face check) can open it right away. Test: open this app, switch to the bank app's scanner, it must work.
 - Top-left glass pill: flash, Live (motion) photo, `EV 0.0`. Top-right: Google Lens button, 6-dot menu.
 - Left floating badges: auto-macro, low-light/night hint.
 - Row above the shutter: retouch button (left), lens pills `0.6 · 1x · 2 · 3.5 · 7` (center), filters button (right). Pinch zoom with a zoom ruler.
@@ -151,7 +162,8 @@ Done when: each resolution/fps the probe allowed records, plays in the gallery m
 
 ### Phase 3 — system integration and gallery handoff
 
-- Default-camera intents: `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `VIDEO_CAMERA`, `IMAGE_CAPTURE`, `VIDEO_CAPTURE` (return result to the calling app).
+- Default-camera intents: `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `VIDEO_CAMERA` (power double-press, if OxygenOS honours a third-party default — PROBE).
+- `IMAGE_CAPTURE` / `VIDEO_CAPTURE` (return result to the calling app): declared, but since Android 11 only apps that show their own camera chooser or name this app can reach it; the system sends everyone else to the stock camera. Not a promise to make "the camera for all apps".
 - Lock-screen (secure) mode: `showWhenLocked`, no settings access, thumbnail opens our own mini viewer limited to this session's shots.
 - Unlocked thumbnail: open in my-gallerymanager **with swiping through `DCIM/Camera`**. This needs a small change in the my-gallerymanager repo (accept `com.android.camera.action.REVIEW` and open the viewer on the camera album at that item) — separate session in that repo, with the owner's OK.
 - Quick Settings tile, launcher long-press shortcuts (selfie, video).
@@ -266,6 +278,11 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 |---|---|---|---|
 | [ ] | Self-update from GitHub Releases | OK | 0 |
 | [ ] | Diagnostics / probe report | OK | 0 |
+| [ ] | "Camera Dev" side-by-side build, emulator, scrcpy | OK | 0 |
+| [ ] | Crash log + share | OK | 0 |
+| [ ] | Permission flow + denied screen | OK | 1 |
+| [ ] | Camera busy / disconnected / hot / storage full handled | OK | 1 |
+| [ ] | Camera released on background (bank scanner works after) | OK | 1 |
 | [ ] | Lens pills 0.6/1/2/3.5/7 + pinch zoom | OK | 1 |
 | [ ] | Extra focal lengths 28/35/243 mm, default 24/28/35 | OK | 1 |
 | [ ] | Flash off/auto/on/torch, front screen flash | OK | 1 |
@@ -283,6 +300,8 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [ ] | Slo-mo | PROBE | 2 |
 | [ ] | Time-lapse | OK | 2 |
 | [ ] | Default camera + power double-press launch | PROBE | 3 |
+| [ ] | Other apps' "take a photo" (`IMAGE_CAPTURE`) | NO by default (Android 11+: stock camera only; works only from apps with a chooser) | 3 |
+| [ ] | **Beta 1 milestone** (Phases 0–3 confirmed) | — | 3 |
 | [ ] | Lock-screen secure mode + mini viewer | OK | 3 |
 | [ ] | Swipe through roll in my-gallerymanager | OK | 3 |
 | [ ] | QS tile, launcher shortcuts | OK | 3 |
@@ -336,5 +355,5 @@ All answered (2026-11-23):
 
 1. Open a new session in `C:\Users\Amir Rashid\my-camera`; say "Do Phase N of PLAN.md" (or a named part of it).
 2. The session reads `CLAUDE.md`, this file and the relevant screenshots, presents its plan, and waits for approval (global rule).
-3. Build → tests → commit on `main` → push only when the owner says so (a push makes CI publish an APK the phone picks up).
+3. Build → tests → check on screen: install "Camera Dev" with `adb install` (phone) or run it on the emulator, take screenshots and compare with `docs/stock-reference/` → commit on `main` → push only when the owner says so (a push makes CI publish an APK the phone picks up as an update).
 4. Owner checks the phase's "done when" list on the phone; the session ticks the checklist rows and stops.

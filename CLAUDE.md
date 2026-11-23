@@ -34,7 +34,10 @@ Before finishing any UI change, check each new composable against this list and 
 # Camera rules
 
 - **Never fake a feature.** Every control that depends on hardware checks the capability first (see the Diagnostics/probe data). If the phone does not support it, hide the control. Never fast-switch cameras to imitate simultaneous streams.
-- Camera work never runs on the main thread. Open the camera in `onResume`, release it in `onPause`; a camera left open blocks every other camera app.
+- Camera work never runs on the main thread. Open the camera in `onResume`, release it in `onPause`; a camera left open blocks every other camera app, including the owner's banking apps' QR and face-check scanners.
+- Controls for features from a later phase stay hidden until that phase builds them.
+- Camera busy, disconnected, overheating, storage full and denied permissions each get a clear message and a way out; never a crash, a frozen or a black viewfinder.
+- Every native library must ship x86_64 too (the emulator build), or its control is hidden on the emulator.
 - All preview and recording frames go through the single GL pipeline in `gl/`; do not add a second preview path.
 - Photos and videos are saved through MediaStore to `DCIM/Camera/` with `IMG_…` / `VID_…` names (PLAN.md, Tech stack).
 - Lock-screen (secure) launches must never show photos taken before that launch.
@@ -44,6 +47,11 @@ Before finishing any UI change, check each new composable against this list and 
 
 Solo developer, no CI review gate: work directly on `main`, no feature branches. For each phase:
 understand the screenshots and PLAN.md section → present a short plan and wait for approval → build → add a JUnit test
-for any new pure logic (parsers, maths, file naming, settings migration, Motion Photo writer) → run tests → commit on
-`main` → push only when the owner says so (a push publishes a release APK the phone will offer as an update) → the
-owner checks the phase on the phone → tick PLAN.md's checklist.
+for any new pure logic (parsers, maths, file naming, settings migration, Motion Photo writer) → run tests → install the
+"Camera Dev" debug build (`adb install` to the phone, or the emulator), take screenshots (`adb exec-out screencap -p`)
+and compare with `docs/stock-reference/` → commit on `main` → push only when the owner says so (a push publishes a
+release APK the phone will offer as an update) → the owner checks the phase on the phone → tick PLAN.md's checklist.
+
+Never see, ask for in chat, or type keystore passwords or other secrets: give the owner the exact command to run
+(e.g. `gh secret set KEYSTORE_PASSWORD`) and let them enter the value. Downloads and new tools (e.g. scrcpy) need the
+owner's OK first.
