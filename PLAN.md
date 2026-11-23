@@ -283,6 +283,15 @@ Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extens
 - Probe: front `1` + rear `0` are a concurrent set, and front + 3 physical rear streams configured successfully. Dual view is OK.
 - Quad view (3 rear + front): session proven. Phase 9 must check it streams smoothly (target 30 fps per tile, reduced stream sizes) and stays cool for a few minutes; if not, offer the largest combination that does (e.g. 2 rear + front).
 
+**Built in Phase 9 (facts learned, details in the hand-over note):**
+- `camera/MultiCameraEngine.kt` opens the logical rear camera and the front camera together (only where `CameraManager.concurrentCameraIds` lists them as a pair; debuggable builds try anyway so the emulator shows the layouts). Dual uses the logical rear camera at 1x; Quad asks the logical camera for its physical lenses (ultra wide, main, tele, sorted by focal length) as separate streams, each at most 1 MP, the front at its own size. Any refusal or lost camera ends in a message and the normal camera, never a crash.
+- The GL renderer got extra camera sources (`PreviewRenderer.makeSources`, `Src`): every camera is drawn as a tile with the same shader (so crops, looks and mirroring work), for the screen, the encoder pass and snapshots (`drawComposite`). Layout maths and the Quad step-down rules are pure (`dual/DualRules.kt`, tested).
+- DUAL and QUAD are modes at the end of the strip (Phase 10 moves them into More). Dual: layouts Picture-in-picture (drag to move, pinch to resize, tap to swap), Top and bottom, Side by side, a swap button; tiles glide between layouts. The record button records; the camera button (right) and the left button while recording take a photo of the composite (1080 x 1920 JPEG in `DCIM/Camera`). Flash, EV, lens pills, filters and the menu are hidden in these modes.
+- Recording: Settings > Video > Dual-view recording (shown where the phone lists the pair): Combined (one 9:16 file, 1080 x 1920, or 720 x 1280 if the encoder cannot do 1080) or Separate files (`VID_..._REAR.mp4` and `VID_..._FRONT.mp4`, 3:4, each with sound, from the same frames). Files stay portrait whatever the phone orientation. No 10-bit, no slo-mo.
+- Quad view: 2x2 tiles (ultra wide, main, tele, front). It counts the frames each camera delivers and watches `Heat`; under 24 fps after 3 s, or a warm phone, it steps down to 2 rear + front (3 tiles), then switches Quad off for the run. It never reopens cameras while recording. Hidden where the phone has fewer than 2 physical rear lenses. **Smoothness and heat are only known on the phone.**
+- Bug found and fixed on the way: while an encoder runs the screen stops taking camera frames; a frame that was already waiting when the encoder was set stalled the camera. `startEncoding` / `startClip` now take it at once.
+- The emulator (software GL) is too slow for 1080 x 1920 composite recording; debuggable builds only try 720 wide.
+
 ### Phase 10 — polish
 
 - Animation audit against CLAUDE.md for every screen.
