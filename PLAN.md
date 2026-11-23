@@ -106,6 +106,7 @@ Each phase ends with: tests green (where the repo has them), APK built, the owne
 | 8 | Retouch / beauty | **Opus 5.5 high** |
 | 9 | Dual view + quad view | **Opus 5.5 high** |
 | 10 | Polish and animation audit | Sonnet 5.5 medium |
+| 11 | Plus Key double-press launch (optional, after Phase 10) | Sonnet 5.5 medium (Opus if the lock-screen launch gets stuck) |
 
 ### Phase 0 — skeleton, CI, updater, probe
 
@@ -126,7 +127,7 @@ Build:
   - Which app currently answers `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `IMAGE_CAPTURE`, `VIDEO_CAMERA`.
 - Manifest already declares those camera intents, so the owner can set this app as default camera and test the power-button double-press (result recorded in the checklist below).
 
-Done when: APK installs; the app updates itself from a second CI build; "Camera Dev" installs next to it from the PC and runs on the emulator; scrcpy shows the phone on the PC; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.** (Done 2026-11-23 from `docs/camera-probe.json`; only the power double-press is still PROBE, pending the owner's test.)
+Done when: APK installs; the app updates itself from a second CI build; "Camera Dev" installs next to it from the PC and runs on the emulator; scrcpy shows the phone on the PC; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.** (Done 2026-11-23 from `docs/camera-probe.json`; the power double-press turned out NO, see Phase 3.)
 
 ### Phase 1 — photo mode core
 
@@ -172,16 +173,16 @@ Done when: each resolution/fps the probe allowed records, plays in the gallery m
 
 ### Phase 3 — system integration and gallery handoff
 
-- Default-camera intents: `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `VIDEO_CAMERA` (power double-press, if OxygenOS honours a third-party default — PROBE).
+- Default-camera intents: `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `VIDEO_CAMERA`. **Power double-press: NO on this phone** (owner test 2026-11-23: OxygenOS launches its own camera by name; with the stock camera disabled the press does nothing, and OxygenOS 16 has no Camera row under Default apps). The app still answers the intents for any launcher that sends them.
 - `IMAGE_CAPTURE` / `VIDEO_CAPTURE` (return result to the calling app): declared, but since Android 11 only apps that show their own camera chooser or name this app can reach it; the system sends everyone else to the stock camera. Not a promise to make "the camera for all apps".
 - Lock-screen (secure) mode: `showWhenLocked`, no settings access, thumbnail opens our own mini viewer limited to this session's shots.
 - Unlocked thumbnail: open in my-gallerymanager **with swiping through `DCIM/Camera`**. This needs a small change in the my-gallerymanager repo (accept `com.android.camera.action.REVIEW` and open the viewer on the camera album at that item) — separate session in that repo, with the owner's OK.
 - Quick Settings tile, launcher long-press shortcuts (selfie, video).
-- **Quick launch by double-pressing a volume key with the screen off: NO** (Android does not deliver key presses to apps while the screen is off). Substitutes: power-button double-press via default camera (if the probe test passed), lock-screen shortcut, QS tile.
+- **Quick launch by double-pressing a volume key with the screen off: NO** (Android does not deliver key presses to apps while the screen is off). Substitutes: QS tile (needs the phone unlocked: Android asks for the unlock first), launcher shortcuts, and the optional Plus Key launch (Phase 11).
 
 **Built in Phase 3 (camera side):** `LaunchRequest` maps the intents to a start mode (STILL, VIDEO, SECURE_STILL, IMAGE_CAPTURE, VIDEO_CAPTURE) and the launcher shortcuts (Selfie, Video); `MainActivity` is `singleTop` and takes `onNewIntent`. A lock-screen launch shows over the lock, hides Settings and the update dialog, forgets every earlier picture (also when it reaches a camera that was already open), and its thumbnail opens `SessionViewer` (only this launch's shots). IMAGE_CAPTURE / VIDEO_CAPTURE take one shot, copy it to `EXTRA_OUTPUT` (or return its Uri and a small picture) and close. The Quick Settings tile opens the camera (the lock-screen camera when locked). The thumbnail sends `com.android.camera.action.REVIEW` to the gallery manager first and falls back to a plain view; **the gallery manager side (accept REVIEW, open its viewer on the camera album at that item) is not done: it is a separate change in my-gallerymanager and needs the owner's OK.**
 
-Done when: the power double-press (if supported), QS tile and lock-screen launch open this app; locked users cannot see older photos; unlocked thumbnail swipes through the roll.
+Done when: the QS tile and the launcher shortcuts open this app, and a lock-screen launch (any launcher that sends the secure intent) opens it; locked users cannot see older photos; unlocked thumbnail swipes through the roll.
 
 ### Phase 4 — Master (Pro) and Pro video
 
@@ -245,6 +246,18 @@ Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extens
 - Preserve settings (all 11 switches) wired end to end; Restore defaults; Privacy page; mode-strip reorder (pencil in More).
 - Performance: time-to-first-frame from launch and from lock screen; shutter lag; memory during bursts.
 
+### Phase 11 — Plus Key double-press launch (optional, planned 2026-11-23, build after Phase 10)
+
+Goal: double-press the OnePlus 15 Plus Key (the action button) to open this camera, also from the lock screen, with no second app. The power key and the volume keys are not possible (OxygenOS owns the power double-press; Android never gives key presses to apps with the screen off). Accessibility services are avoided on purpose: many banking apps refuse to run while an unknown one is on.
+
+Idea: the OnePlus system writes a line (`KEYLOG_OplusKeyEventUtil`) to the phone's internal log when the Plus Key is pressed (source: a blog post, not verified; the Tasker + Shizuku trick relies on it). With the `READ_LOGS` permission, granted once from a PC (`adb shell pm grant <package> android.permission.READ_LOGS`), this app can read that log itself.
+
+1. **Test (decision point).** Diagnostics gets a "Key log" screen that shows the live log lines. The owner presses the Plus Key once and twice, with the screen on, off and locked (and the power and volume keys for comparison). Continue only if there is a clear line for the Plus Key every time; otherwise stop and change nothing else.
+2. **Listener.** A foreground service (permanent notification) reads the log, counts two presses within about 500 ms and starts the camera: the secure camera intent over the lock screen, the normal one when unlocked. Needs "Display over other apps" (Android 14+ blocks starting an app from the background otherwise) and a battery-optimisation exemption. New General setting "Plus Key launch", off by default. Must survive a reboot (start at boot), ignore single presses, stop cleanly when switched off, and not drain the battery (check after an hour idle).
+3. **Setup screen.** Plain-words page in the app: the one PC command, the overlay switch, the battery exemption, and a check button that says which part is still missing.
+
+Risks: the log line may not exist or may not appear with the screen off; OxygenOS may kill the service; the permission is lost if the app is reinstalled; Android may refuse a background start over the lock screen (fallback: open the camera right after unlock). Done when: a double-press of the Plus Key opens the camera from the lock screen and from the home screen on the phone, a single press does nothing, and it still works after a restart.
+
 ---
 
 ## Mode menus (6-dot) — from the stock app
@@ -269,7 +282,7 @@ More grid (`06-more-modes-grid.jpg`): Night, Pano, Pro Video, Slo-mo, Time-lapse
 - Formats › (Photo: Ultra HDR on/off — High resolution is NO, row not shown; High efficiency image (HEIF; motion photos fall back to JPEG); Video: High efficiency video (HEVC))
 - Preserve settings › (Shooting mode, Styles & effects, Creative effects, Exposure setting, Auto macro, Motion Photo, AI Telescope Zoom, Portrait mode zooming; Pro: Pro assistance, Metering, Photo formats)
 - *Handy features:* Volume button action (Volume / Shutter / Zoom) · Photo orientation (Follow system / Auto-rotate) · Smart suggestions
-- Quick launch — **NO** (see Phase 3); row not shown.
+- Quick launch — **NO** (see Phase 3); row not shown. Plus Key launch (Phase 11): a switch here, off by default, only once Phase 11 is built.
 - About Camera › (version, build, CHECK FOR UPDATES, Diagnostics) · Privacy › · Restore defaults
 
 **Photo**
@@ -315,8 +328,8 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [ ] | Photo while recording (still / motion) | OK | 2 |
 | [ ] | Slo-mo 1080p/720p 240 fps all rear, 4K120 main; none on front | OK | 2 |
 | [ ] | Time-lapse | OK | 2 |
-| [ ] | Default camera + power double-press launch | PROBE (owner test on the phone; app already answers the intents) | 3 |
-| [ ] | Other apps' "take a photo" (`IMAGE_CAPTURE`) | NO by default (Android 11+: stock camera only; works only from apps with a chooser) | 3 |
+| [ ] | Default camera + power double-press launch | NO (OxygenOS opens its own camera by name; no Camera row in Default apps; owner tested 2026-11-23). Substitute: Phase 11 | 3 |
+| [ ] | Other apps' "take a photo" (`IMAGE_CAPTURE`) | NO by default (Android 11+: stock camera only; WhatsApp and the banking apps tested 2026-11-23 go straight to it, no picker). The code answers the request if an app does send it | 3 |
 | [ ] | **Beta 1 milestone** (Phases 0–3 confirmed) | — | 3 |
 | [ ] | Lock-screen secure mode + mini viewer | OK | 3 |
 | [ ] | Swipe through roll in my-gallerymanager | OK | 3 |
@@ -357,6 +370,7 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [ ] | Dual-view video, all layouts | OK | 9 |
 | [ ] | Quad view (session proven; smoothness/heat checked in Phase 9) | OK | 9 |
 | [ ] | Preserve settings, restore defaults, privacy, mode reorder | OK | 10 |
+| [ ] | Plus Key (action button) double-press opens the camera, no second app | PROBE (step 1 of Phase 11 finds out whether the phone logs the key) | 11 |
 | [ ] | Dolby Vision recording | NO for now (camera lists a DV profile; Phase 2 checks for a `video/dolby-vision` encoder) | — |
 
 ## Open questions
