@@ -1,0 +1,10 @@
+.gradle/
+build/
+local.properties
+*.jks
+*.keystore
+node_modules/
+_work/
+.idea/
+graphify-out/
+docs/stock-reference/
