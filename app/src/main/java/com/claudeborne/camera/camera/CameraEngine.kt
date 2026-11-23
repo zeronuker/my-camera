@@ -16,6 +16,7 @@ import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
 import android.util.Range
 import com.claudeborne.camera.video.Hdr
+import com.claudeborne.camera.video.LensZone
 import com.claudeborne.camera.video.VideoCaps
 import android.hardware.camera2.params.SessionConfiguration
 import android.location.Location
@@ -129,6 +130,8 @@ class CameraEngine(context: Context) {
     @Volatile private var awbLock = false
     private var hsRecord: Surface? = null // the encoder surface while a high-speed recording runs
     private var hsFps = 0
+    private var hsCameraId: String? = null // high-speed runs on the physical lens camera, a plain single-sensor session
+    private var hsZoom = 1f // zoom relative to that lens
     private var hsReady: ((Boolean) -> Unit)? = null
     private var hsStopped: (() -> Unit)? = null
     private var cameraId: String? = null
@@ -223,38 +226,42 @@ class CameraEngine(context: Context) {
     }
 
     /**
-     * Switches the open camera to a constrained high-speed session that also feeds [record] (the encoder surface) at [fps]
-     * (120 or 240). [ready] is called on the camera thread with true once frames flow, false when the camera refused (the normal
-     * preview is restored then).
+     * Reopens the camera for 120 or 240 fps: the physical lens camera that the current zoom is on, with a constrained high-speed session
+     * that feeds [record] (the encoder surface) at [fps]. [ready] is called on the camera thread with true once frames flow, false when
+     * the camera refused (the normal preview is back then).
      */
     fun startHighSpeed(record: Surface, fps: Int, ready: (Boolean) -> Unit) {
         handler.post {
-            val cam = device
-            if (cam == null || surface == null || wantVideo == null) return@post ready(false)
+            if (wantTexture == null || wantVideo == null) return@post ready(false)
+            val z = zoom
+            val zone = LensZone.of(z)
+            hsCameraId = try { physicalFor(zone) } catch (_: Exception) { null }
+            hsZoom = z / when (zone) { 0 -> info?.zoomMin ?: z; 1 -> 1f; else -> LensZone.MAIN_MAX }
             hsFps = fps
             hsRecord = record
             hsReady = ready
-            val mine = generation
-            handler.postDelayed({ if (mine == generation) hsReady?.let { hsReady = null; it(false) } }, 6000)
-            session = null
-            request = null
-            configure(cam, mine)
+            retries = 0
+            start(keepHs = true)
         }
     }
 
-    /** Back to the normal preview session; [done] runs when the encoder surface is no longer written to. */
+    /** Back to the normal preview camera; [done] runs once the camera is closed, so nothing writes into the encoder any more. */
     fun stopHighSpeed(done: () -> Unit) {
         handler.post {
-            val cam = device
-            if (hsRecord == null || cam == null) return@post done()
-            hsRecord = null
+            if (hsRecord == null) return@post done()
             hsStopped = done
-            val mine = generation
-            handler.postDelayed({ if (mine == generation) hsStopped?.let { hsStopped = null; it() } }, 1500)
-            session = null
-            request = null
-            configure(cam, mine)
+            retries = 0
+            start() // closes the high-speed camera (running [done]) and opens the normal one
         }
+    }
+
+    /** The physical camera behind the logical rear camera for a lens zone (0 ultra wide, 1 main, 2 telephoto), found by focal length. */
+    private fun physicalFor(zone: Int): String? {
+        val logical = pickCamera(Facing.BACK) ?: return null
+        val ids = manager.getCameraCharacteristics(logical).physicalCameraIds.toList()
+        if (ids.size != 3) return null
+        val byFocal = ids.sortedBy { manager.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f }
+        return byFocal[zone.coerceIn(0, 2)]
     }
 
     /** Video "Focus lock": keeps the focus and exposure where they are now (no focus point), until [clearFocus]. */
@@ -331,19 +338,28 @@ class CameraEngine(context: Context) {
         if (aeRegions) b.set(CaptureRequest.CONTROL_AE_REGIONS, rect)
     }
 
-    private fun start() {
-        stop()
+    private fun start(keepHs: Boolean = false) {
+        stop(keepHs)
         val texture = wantTexture ?: return
         val mine = generation
         try {
-            val id = pickCamera(wantFacing) ?: return fail(Kind.FAILED, "no ${wantFacing.name.lowercase()} camera")
+            val id = hsCameraId ?: pickCamera(wantFacing)
+            if (id == null) {
+                // right after a camera crash the system lists no cameras for a few seconds: wait for them instead of giving up
+                if (retries++ < 12) {
+                    state = State.Opening
+                    handler.postDelayed({ if (mine == generation) start(keepHs) }, 700)
+                    return
+                }
+                return fail(Kind.FAILED, "no ${wantFacing.name.lowercase()} camera")
+            }
             val chars = manager.getCameraCharacteristics(id)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             val sizes = map.getOutputSizes(SurfaceTexture::class.java).map { it.width to it.height }
             val caps = videoCaps(chars, map, sizes)
             val video = wantVideo
-            val (w, h) = (if (video != null) (video.width to video.height).takeIf { it in caps.sizes } else choosePreviewSize(sizes))
-                ?: return fail(Kind.FAILED, if (video != null) "this camera cannot record that video size" else "no preview size")
+            val (w, h) = (if (video != null) (video.width to video.height).takeIf { it in caps.sizes && (hsRecord == null || it in caps.highSpeed) } else choosePreviewSize(sizes))
+                ?: return if (hsRecord != null) hsFailed("this lens cannot do that high-speed size", mine) else fail(Kind.FAILED, if (video != null) "this camera cannot record that video size" else "no preview size")
             val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
             hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             qualityNoise = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY) == true
@@ -374,7 +390,11 @@ class CameraEngine(context: Context) {
             surface = Surface(texture)
             state = State.Opening
             // a camera that never answers must end in a message, not a frozen black viewfinder
-            handler.postDelayed({ if (mine == generation && state == State.Opening) fail(Kind.FAILED, "the camera did not answer") }, 8000)
+            handler.postDelayed({
+                if (mine == generation && state == State.Opening) {
+                    if (hsRecord != null) hsFailed("the camera did not answer", mine) else fail(Kind.FAILED, "the camera did not answer")
+                }
+            }, 8000)
             manager.openCamera(id, object : CameraDevice.StateCallback() {
                 override fun onOpened(camera: CameraDevice) {
                     if (mine != generation) return camera.close()
@@ -385,7 +405,7 @@ class CameraEngine(context: Context) {
                 override fun onDisconnected(camera: CameraDevice) {
                     camera.close()
                     if (mine != generation) return
-                    if (hsRecord != null || hsReady != null) return hsFailed("the camera stopped", mine, reopen = true)
+                    if (hsRecord != null || hsReady != null) return hsFailed("the camera stopped", mine)
                     fail(Kind.DISCONNECTED)
                     if (retries++ < 3) handler.postDelayed({ if (mine == generation) start() }, 700)
                 }
@@ -393,7 +413,7 @@ class CameraEngine(context: Context) {
                 override fun onError(camera: CameraDevice, error: Int) {
                     camera.close()
                     if (mine != generation) return
-                    if (hsRecord != null || hsReady != null) return hsFailed("camera error $error", mine, reopen = true)
+                    if (hsRecord != null || hsReady != null) return hsFailed("camera error $error", mine)
                     when (error) {
                         ERROR_IN_USE, ERROR_MAX_IN_USE -> busy()
                         ERROR_DISABLED -> fail(Kind.DISABLED)
@@ -444,14 +464,14 @@ class CameraEngine(context: Context) {
                                 hsReady?.let { hsReady = null; it(true) }
                                 hsStopped?.let { hsStopped = null; it() }
                             } catch (e: Exception) { // a camera that closed under us must end in a message, not an uncaught crash
-                                if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine, reopen = false)
+                                if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine)
                                 else fail(Kind.FAILED, e.message ?: e.javaClass.simpleName)
                             }
                         }
 
                         override fun onConfigureFailed(s: CameraCaptureSession) {
                             if (mine != generation) return
-                            if (record != null) return hsFailed("the camera refused the high-speed session", mine, reopen = false)
+                            if (record != null) return hsFailed("the camera refused the high-speed session", mine)
                             // a refused 10-bit or Ultra Steady choice is dropped once, so the viewfinder still comes up
                             if (video != null && (video.hdr != null || video.stabilisation == 2)) {
                                 val what = if (video.hdr != null) "10-bit HDR is not available at this quality" else "Ultra Steady is not available at this quality"
@@ -466,43 +486,52 @@ class CameraEngine(context: Context) {
                 ),
             )
         } catch (e: Exception) {
-            if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine, reopen = false)
+            if (record != null) hsFailed(e.message ?: e.javaClass.simpleName, mine)
             else fail(Kind.FAILED, e.message ?: e.javaClass.simpleName)
         }
     }
 
     /**
-     * The camera could not do (or died in) a high-speed session: tell the screen, hide the 120/240 fps choices, and bring the normal
-     * preview back ([reopen] when the camera itself is gone). The detail goes into the toast so the owner can report it.
+     * The camera could not do (or died in) a high-speed session: tell the screen, hide the 120/240 fps choices, and open the normal
+     * preview again (after a pause, the camera service may be restarting). The detail goes into the toast so the owner can report it.
      */
-    private fun hsFailed(detail: String, mine: Int, reopen: Boolean) {
+    private fun hsFailed(detail: String, mine: Int) {
         hsRecord = null
+        hsCameraId = null
         hsRefused = true
         hsReady?.let { hsReady = null; it(false) }
         hsStopped?.let { hsStopped = null; it() }
         listener?.onFailed("High-speed video failed: $detail")
-        if (reopen) handler.postDelayed({ if (mine == generation) start() }, 300)
-        else device?.let { configure(it, mine) }
+        handler.postDelayed({ if (mine == generation) start() }, 400)
     }
 
     private fun applyRequest() {
         val r = request ?: return
         val s = session ?: return
+        if (hsRecord != null) { // a constrained high-speed request carries only the frame rate (and the lens zoom): anything more can upset the camera
+            try {
+                r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(hsFps, hsFps))
+                val z = info
+                if (z != null && hsZoom > 1.02f) r.set(CaptureRequest.CONTROL_ZOOM_RATIO, hsZoom.coerceIn(z.zoomMin, z.zoomMax))
+                val burst = s as? CameraConstrainedHighSpeedCaptureSession ?: throw IllegalStateException("not a high-speed session")
+                burst.setRepeatingBurst(burst.createHighSpeedRequestList(r.build()), previewCallback, handler)
+            } catch (e: Exception) {
+                hsFailed(e.message ?: e.javaClass.simpleName, generation)
+            }
+            return
+        }
         common(r)
         r.set(CaptureRequest.CONTROL_AE_MODE, aeMode(flash))
         r.set(CaptureRequest.FLASH_MODE, if (flash == Flash.TORCH && hasFlash) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
         wantVideo?.let {
-            val fast = hsRecord != null
-            r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, if (fast) Range(hsFps, hsFps) else Range(it.aeRange.first, it.aeRange.second))
-            if (!fast) r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it.stabilisation)
+            r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(it.aeRange.first, it.aeRange.second))
+            r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it.stabilisation)
             if (info?.hasAwbLock == true) r.set(CaptureRequest.CONTROL_AWB_LOCK, awbLock)
         }
         try {
-            if (s is CameraConstrainedHighSpeedCaptureSession) s.setRepeatingBurst(s.createHighSpeedRequestList(r.build()), previewCallback, handler)
-            else s.setRepeatingRequest(r.build(), previewCallback, handler)
-        } catch (e: Exception) {
-            // the session is closing; the next open() starts fresh. A high-speed session that cannot take its request is given up.
-            if (hsRecord != null) hsFailed(e.message ?: e.javaClass.simpleName, generation, reopen = false)
+            s.setRepeatingRequest(r.build(), previewCallback, handler)
+        } catch (_: Exception) {
+            // the session is closing; the next open() starts fresh
         }
     }
 
@@ -648,7 +677,7 @@ class CameraEngine(context: Context) {
 
     private fun fail(kind: Kind, detail: String = "") { state = State.Error(kind, detail) }
 
-    private fun stop() {
+    private fun stop(keepHs: Boolean = false) {
         generation++
         pending = null
         phase = Phase.NONE
@@ -661,8 +690,11 @@ class CameraEngine(context: Context) {
         try { device?.close() } catch (_: Exception) { }
         try { surface?.release() } catch (_: Exception) { }
         try { reader?.close() } catch (_: Exception) { }
-        hsRecord = null
-        hsReady?.let { hsReady = null; it(false) }
+        if (!keepHs) {
+            hsRecord = null
+            hsCameraId = null
+            hsReady?.let { hsReady = null; it(false) }
+        }
         hsStopped?.let { hsStopped = null; it() } // the camera is closed: nothing writes into the encoder any more
         session = null
         device = null
