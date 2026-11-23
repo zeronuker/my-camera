@@ -397,12 +397,18 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     }
     // the look: filter, Soft light and styles (Master), scenes (Video), Underwater and Tilt-shift; 120 and 240 fps video bypasses the GL pipeline, so it gets none
     val lookFilterOk = !isMaster && !mode.oneShot && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
+    // Retouch (faces smoothed and reshaped): Photo, Portrait and normal video; the straightening of ultra wide faces needs the rear camera below 1x
+    val retouchOk = lookFilterOk && (mode == Mode.PHOTO || mode == Mode.PORTRAIT || mode == Mode.VIDEO)
+    val retouchBase = com.claudeborne.camera.face.RetouchStore.decode(AppSettings.retouch)
+    val retouchNow = if (!retouchOk) null else retouchBase.copy(
+        correct = if (AppSettings.distortionFix && facing == Facing.BACK && !isVideo) com.claudeborne.camera.face.RetouchOps.edgeAngle(zoom) else 0f,
+    ).takeIf { it.active }
     val look = if (isVideo && picked?.highSpeed == true) Look.NONE else Look(
         filter = if (lookFilterOk) AppSettings.filter.coerceIn(0, com.claudeborne.camera.look.Filters.all.lastIndex) else 0,
         soft = if (mode == Mode.PHOTO || mode == Mode.PORTRAIT || isMaster) AppSettings.softLight else 0,
         tone = if (isMaster) AppSettings.styleTone else 0, sat = if (isMaster) AppSettings.styleSat else 0, warm = if (isMaster) AppSettings.styleWarm else 0,
         tint = if (isMaster) AppSettings.styleTint else 0, sharp = if (isMaster) AppSettings.styleSharp else 0, vignette = isMaster && AppSettings.styleVignette,
-        underwater = mode == Mode.UNDERWATER, tilt = if (mode == Mode.TILTSHIFT) tilt else null,
+        underwater = mode == Mode.UNDERWATER, tilt = if (mode == Mode.TILTSHIFT) tilt else null, retouch = retouchNow,
     ).withScene(scene)
     val lookNow by rememberUpdatedState(look)
     val hdrNow = if (plainVideo && picked?.highSpeed != true) hdrChoices.firstOrNull { it.second == AppSettings.videoHdr }?.let { Hdr.entries[it.second - 1] } else null
@@ -483,6 +489,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         renderer.maskSink = if (dofOn) { rgba, w, h -> scanner.mask(rgba, w, h) { bytes, mw, mh -> renderer.setMask(bytes, mw, mh) }; Unit } else null
         glView?.requestRender()
         onDispose { renderer.dof = false; renderer.maskSink = null }
+    }
+    // Retouch: while a face slider is on (or the ultra wide correction), small copies of the frame go to the face finder; the shader reads its faces
+    val faceOn = retouchNow != null && resumed
+    DisposableEffect(faceOn, facing) {
+        val track = com.claudeborne.camera.face.FaceTrack()
+        renderer.faceSink = if (faceOn) { rgba, w, h -> scanner.faces(rgba, w, h) { found -> renderer.faces = track.update(found); glView?.requestRender() }; Unit } else null
+        onDispose { renderer.faceSink = null; renderer.faces = emptyList() }
     }
     // the level line: the phone's gravity, only while the line is on show
     val levelOn = (proMode && AppSettings.levelLine) || AppSettings.composeLevel
@@ -1383,7 +1396,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
                             Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
                                 Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                                    if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else Spacer(Modifier.size(44.dp)) // retouch goes here in a later phase
+                                    if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else if (retouchOk) LookButton(Icon.RETOUCH, retouchBase.sliders) { menu = Menu.RETOUCH; evOpen = false; proOpen = null; qualityOpen = false } else Spacer(Modifier.size(44.dp))
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->
                                         macro = false
                                         // the active button steps through the extra focal lengths (28 / 35 mm, 243 mm); the others jump
@@ -1431,6 +1444,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 Visible(menu != Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
                     if (menu == Menu.FILTERS) Box(Modifier.padding(bottom = 16.dp)) {
                         FilterPanel(AppSettings.filter) { AppSettings.filter = it; say(com.claudeborne.camera.look.Filters.all[it].name) }
+                    } else if (menu == Menu.RETOUCH) Box(Modifier.padding(bottom = 16.dp)) {
+                        RetouchPanel(retouchBase) { AppSettings.retouch = com.claudeborne.camera.face.RetouchStore.encode(it); glView?.requestRender() }
                     } else if (menu == Menu.STYLES) Box(Modifier.padding(bottom = 16.dp)) {
                         StylesPanel(onChange = { glView?.requestRender() })
                     } else if (menu == Menu.SCENES) Box(Modifier.padding(bottom = 16.dp)) {

@@ -237,6 +237,11 @@ private fun PhotoTab(open: (SettingsPage) -> Unit) {
     Group(footer = "Beyond 10x zoom, a second picture is saved after the normal one, redrawn by an AI model (Real-ESRGAN) for finer detail. It takes about a minute; a bar shows the progress. Keep the app open until it is done.") {
         row { SwitchRow("AI Telescope Zoom", AppSettings.aiZoom, { AppSettings.aiZoom = it }) }
     }
+    if (com.claudeborne.camera.camera.Extensions.ultraWideAvailable(LocalContext.current)) Group(
+        footer = "In Photo and Portrait, faces near the edges of the ultra wide view are squeezed back to their true shape.",
+    ) {
+        row { SwitchRow("Portrait distortion correction", AppSettings.distortionFix, { AppSettings.distortionFix = it }) }
+    }
     Group(footer = "Switches to the ultra wide lens (it focuses from 3.5 cm) when the subject is too close for the main lens.") {
         row { SwitchRow("Auto macro", AppSettings.autoMacro, { AppSettings.autoMacro = it }) }
     }

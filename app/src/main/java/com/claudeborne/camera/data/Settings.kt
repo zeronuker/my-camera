@@ -102,6 +102,10 @@ object Settings {
     var lutPreview by Pref("lutPreview", true) // Pro video: show the normal look on screen while the file is flat
     var shutterAngle by Pref("shutterAngle", false) // Pro video: show the shutter as an angle instead of 1/x
 
+    // Retouch (Phase 8)
+    var retouch by Pref("retouch", "") // the eleven sliders as text (face/RetouchStore); empty = all off
+    var distortionFix by Pref("distortionFix", true) // straighten faces stretched near the edges of the ultra wide view
+
     // Looks (Phase 5)
     var filter by Pref("filter", 0) // index into Filters.all; 0 = Original
     var softLight by Pref("softLight", 0) // 0..9

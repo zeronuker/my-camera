@@ -22,7 +22,11 @@ class FrameHit(val qr: String?, val lines: List<Frac>, val chars: Int, val quad:
  * at a time on its own thread and frames that arrive meanwhile are dropped, so the viewfinder is never held up.
  */
 class FrameScanner(context: android.content.Context) {
+    init {
+        if (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) com.claudeborne.camera.face.FaceFinder.debugFile = java.io.File(context.filesDir, "debug_face.txt")
+    }
     private val hands by lazy { HandScanner(context) }
+    private val finder by lazy { com.claudeborne.camera.face.FaceFinder() }
     private val worker = Executors.newSingleThreadExecutor()
     private val busy = AtomicBoolean(false)
     private val barcodes by lazy { BarcodeScanning.getClient(BarcodeScannerOptions.Builder().setBarcodeFormats(Barcode.FORMAT_QR_CODE).build()) }
@@ -84,6 +88,22 @@ class FrameScanner(context: android.content.Context) {
         return true
     }
 
+    /** The faces of a GL read-back frame (whole upright frame, not mirrored); frames that arrive while it works are dropped. [done] runs on the scanner thread. */
+    fun faces(rgba: ByteArray, w: Int, h: Int, done: (List<com.claudeborne.camera.face.Face>) -> Unit): Boolean {
+        if (!busy.compareAndSet(false, true)) return false
+        worker.execute {
+            try {
+                val bitmap = upright(rgba, w, h)
+                val found = finder.find(bitmap)
+                bitmap.recycle()
+                done(found)
+            } finally {
+                busy.set(false)
+            }
+        }
+        return true
+    }
+
     /** Reads all the text of a photo (JPEG bytes turned by [rotation] degrees to be upright). Blocks: call it off the main thread. Empty when none. */
     fun readPhoto(jpeg: ByteArray, rotation: Int): String {
         val bitmap = decode(jpeg) ?: return ""
@@ -99,7 +119,7 @@ class FrameScanner(context: android.content.Context) {
 
     fun close() {
         worker.shutdown()
-        runCatching { barcodes.close(); latin.close(); chinese.close(); hands.close() }
+        runCatching { barcodes.close(); latin.close(); chinese.close(); hands.close(); finder.close() }
     }
 
     private fun decode(jpeg: ByteArray): Bitmap? {

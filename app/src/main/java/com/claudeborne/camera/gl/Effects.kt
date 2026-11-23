@@ -26,6 +26,42 @@ internal object Effects {
         uniform float uDof;
         uniform float uDofR;
         vec2 gMaskUv;
+        // Retouch: skin ovals (centre, half axes; turn) in frame-height units, and the amounts
+        uniform vec4 uSkinA[2];
+        uniform vec4 uSkinB[2];
+        uniform float uSkinN;
+        uniform float uSmooth;
+        uniform float uToneAmt;
+        uniform float uSmoothR;
+    """
+
+    /** The face warp: the host puts this before its `texel`, which reads the camera at `warpB(b)` for the frame point `b` (0..1, y up, never mirrored). */
+    const val WARP = """
+        uniform vec4 uOpA[36];
+        uniform vec4 uOpB[36];
+        uniform float uOpN;
+        uniform float uFAsp;
+        vec2 warpB(vec2 b) {
+            if (uOpN < 0.5) return b;
+            vec2 pa = b * vec2(uFAsp, 1.0);
+            vec2 q = pa;
+            for (int i = 0; i < 36; i++) {
+                if (float(i) >= uOpN) break;
+                vec4 A = uOpA[i];
+                vec2 d = pa - A.xy;
+                float t = length(d) / A.z;
+                if (t < 1.0) {
+                    float k = 1.0 - t * t;
+                    k *= k;
+                    float ca = cos(A.w);
+                    float sa = sin(A.w);
+                    vec4 B = uOpB[i];
+                    vec2 l = vec2(ca * d.x + sa * d.y, -sa * d.x + ca * d.y) * B.zw;
+                    q -= k * (B.xy + vec2(ca * l.x - sa * l.y, sa * l.x + ca * l.y));
+                }
+            }
+            return q / vec2(uFAsp, 1.0);
+        }
     """
 
     const val FUNCTIONS = """
@@ -40,6 +76,56 @@ internal object Effects {
             vec2 a = vec2((b0 * 16.0 + c.r * 15.0 + 0.5) / 256.0, (c.g * 15.0 + 0.5) / 16.0);
             vec2 d = vec2((b1 * 16.0 + c.r * 15.0 + 0.5) / 256.0, (c.g * 15.0 + 0.5) / 16.0);
             return mix(texture2D(uLut, a).rgb, texture2D(uLut, d).rgb, f);
+        }
+
+        // Retouch skin: 1 inside a face oval where the colour is skin-like, softly at the edges
+        float skinMask(vec2 b) {
+            vec2 pa = b * vec2(uFAsp, 1.0);
+            float m = 0.0;
+            for (int i = 0; i < 2; i++) {
+                if (float(i) >= uSkinN) break;
+                vec4 A = uSkinA[i];
+                vec2 d = pa - A.xy;
+                float ca = cos(uSkinB[i].x);
+                float sa = sin(uSkinB[i].x);
+                vec2 l = vec2(ca * d.x + sa * d.y, -sa * d.x + ca * d.y) / A.zw;
+                m = max(m, 1.0 - smoothstep(0.72, 1.0, length(l)));
+            }
+            return m;
+        }
+
+        // Smooths skin without blurring edges (eyes, lips, hair): neighbours count less the more their brightness differs
+        vec3 retouchSkin(vec3 c) {
+            vec2 bw = warpB(gMaskUv);
+            float m = skinMask(bw);
+            if (m < 0.01) return c;
+            float cb = 0.5 - 0.168736 * c.r - 0.331264 * c.g + 0.5 * c.b;
+            float cr = 0.5 + 0.5 * c.r - 0.418688 * c.g - 0.081312 * c.b;
+            float skin = smoothstep(0.28, 0.32, cb) * (1.0 - smoothstep(0.49, 0.53, cb)) * smoothstep(0.50, 0.54, cr) * (1.0 - smoothstep(0.66, 0.72, cr));
+            m *= skin;
+            if (m < 0.01) return c;
+            if (uSmooth > 0.001) {
+                float l0 = dot(c, LUMA);
+                float sigma = 0.05 + 0.10 * uSmooth;
+                vec3 acc = c;
+                float wsum = 1.0;
+                for (int i = 1; i < 13; i++) {
+                    float k = float(i);
+                    float a = k * 2.399963;
+                    vec2 off = vec2(cos(a), sin(a)) * sqrt(k / 12.0) * uSmoothR;
+                    vec3 s = texelRaw(bw + off / vec2(uFAsp, 1.0));
+                    float dl = dot(s, LUMA) - l0;
+                    float w = exp(-dl * dl / (2.0 * sigma * sigma));
+                    acc += s * w;
+                    wsum += w;
+                }
+                c = mix(c, acc / wsum, clamp(uSmooth * 1.2, 0.0, 1.0) * m);
+            }
+            if (uToneAmt > 0.001) {
+                // an even, slightly brighter and warmer skin
+                c = mix(c, clamp(c * 1.06 + vec3(0.04, 0.034, 0.028), 0.0, 1.0), uToneAmt * m);
+            }
+            return c;
         }
 
         // Tilt-shift: blur grows with the distance from a band that can be moved and turned
@@ -76,6 +162,7 @@ internal object Effects {
 
         vec3 effect(vec2 d) {
             vec3 c = base(d);
+            if (uSkinN > 0.5) c = retouchSkin(c);
             if (uUnder > 0.5) {
                 // water takes the red away first: put it back, calm the blue and green
                 c *= vec3(1.6, 1.05, 0.8);

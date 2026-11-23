@@ -96,6 +96,12 @@ class PreviewRenderer(
     @Volatile var analysisEveryMs = 400L
     private var analysisAt = 0L
 
+    /** Retouch: the faces of the latest look (frame height units), turned into shader data at every draw with the sliders in [look]. */
+    @Volatile var faces: List<com.claudeborne.camera.face.Face> = emptyList()
+    /** Receives small, look-free copies of the whole upright frame (bottom row first) about ten times a second while set, for finding faces. */
+    @Volatile var faceSink: ((ByteArray, Int, Int) -> Unit)? = null
+    private var faceAt = 0L
+
     private val pending = AtomicInteger(0) // camera frames not yet taken into the texture
     @Volatile private var encoding: Encoding? = null
     private var target: Target? = null
@@ -249,6 +255,7 @@ class PreviewRenderer(
         maybeHistogram()
         maybeAnalysis()
         maybeMask()
+        maybeFaces()
     }
 
     private fun drawScreen() {
@@ -464,6 +471,9 @@ class PreviewRenderer(
         val v = Effects.Values(look, outW.toFloat() / outH.coerceAtLeast(1))
         fun loc(name: String) = GLES20.glGetUniformLocation(oesProgram, name)
         val dofOn = dofAllowed && dof && maskReady
+        val upW = if (sensorOrientation % 180 == 90) bufferHeight else bufferWidth
+        val upH = if (sensorOrientation % 180 == 90) bufferWidth else bufferHeight
+        FaceUniforms.apply(oesProgram, if (look.retouch?.active == true) com.claudeborne.camera.face.RetouchOps.pack(faces, look.retouch, upW.toFloat() / upH.coerceAtLeast(1)) else com.claudeborne.camera.face.Packed.empty())
         GLES20.glUniform1f(loc("uOn"), if (dofOn) 1f else v.on)
         GLES20.glUniform1f(loc("uDof"), if (dofOn) 1f else 0f)
         GLES20.glUniform1f(loc("uDofR"), dofRadius)
@@ -551,6 +561,16 @@ class PreviewRenderer(
         readSmall(256, plain = true, full = true)?.let { sink(it, smallW, smallH) }
     }
 
+    /** About ten times a second while Retouch is on: the whole upright frame, small, for the face finder. */
+    private fun maybeFaces() {
+        val sink = faceSink ?: return
+        if (!hasFrame) return
+        val now = System.nanoTime()
+        if (now - faceAt < 100_000_000L) return
+        faceAt = now
+        readSmall(384, plain = true, full = true)?.let { sink(it, smallW, smallH) }
+    }
+
     /** A person mask from the scanner: [values] one byte per pixel (255 = person), rows bottom first, [w] x [h]. */
     fun setMask(values: ByteArray, w: Int, h: Int) = post {
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, maskTex)
@@ -627,10 +647,9 @@ class PreviewRenderer(
             uniform float uLog;
             uniform vec2 uPx;
             uniform vec3 uAssist;
-            vec3 texel(vec2 d) {
-                vec2 b = (uM * vec3(d, 1.0)).xy;
-                return texture2D(uTex, (uSt * vec4(b, 0.0, 1.0)).xy).rgb;
-            }
+            """ + Effects.WARP + """
+            vec3 texelRaw(vec2 b) { return texture2D(uTex, (uSt * vec4(b, 0.0, 1.0)).xy).rgb; }
+            vec3 texel(vec2 d) { return texelRaw(warpB((uM * vec3(d, 1.0)).xy)); }
             """ + Effects.UNIFORMS + Effects.FUNCTIONS + """
             float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
             void main() {

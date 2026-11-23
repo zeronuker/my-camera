@@ -17,4 +17,16 @@ object Extensions {
     } catch (_: Exception) {
         false
     }
+
+    /** True when a rear camera zooms below 1x, i.e. has an ultra wide view whose edges stretch faces. */
+    fun ultraWideAvailable(context: Context): Boolean = try {
+        val manager = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+        manager.cameraIdList.any { id ->
+            val c = manager.getCameraCharacteristics(id)
+            c.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_BACK &&
+                (c.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)?.lower ?: 1f) < 0.95f
+        }
+    } catch (_: Exception) {
+        false
+    }
 }

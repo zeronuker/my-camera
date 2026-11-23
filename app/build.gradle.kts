@@ -69,6 +69,8 @@ dependencies {
     // Phase 7: AI Telescope Zoom (Real-ESRGAN model in assets, same as the gallery manager) and the portrait cut-out (bundled selfie segmentation)
     implementation("com.google.ai.edge.litert:litert:1.4.0")
     implementation("com.google.mlkit:segmentation-selfie:16.0.0-beta6")
+    // Phase 8: face mesh for the Retouch panel (bundled model)
+    implementation("com.google.mlkit:face-mesh-detection:16.0.0-beta3")
     // Phase 6: hand landmarks for the show-palm timer (the model file is in assets)
     implementation("com.google.mediapipe:tasks-vision:0.10.14")
     // Phase 6: finds the edges of a document and flattens it (official OpenCV for Android; release keeps arm64 only)

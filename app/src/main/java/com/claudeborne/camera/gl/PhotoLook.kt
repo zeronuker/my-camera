@@ -9,6 +9,9 @@ import android.opengl.EGLConfig
 import android.opengl.GLES20
 import android.opengl.GLUtils
 import com.claudeborne.camera.capture.AspectMath
+import com.claudeborne.camera.face.FaceFinder
+import com.claudeborne.camera.face.Packed
+import com.claudeborne.camera.face.RetouchOps
 import com.claudeborne.camera.look.Filters
 import com.claudeborne.camera.look.Look
 import java.io.ByteArrayOutputStream
@@ -46,7 +49,10 @@ object PhotoLook {
             if (turned !== picture) picture.recycle()
             picture = turned
         }
-        if (!look.isIdentity) picture = effect(picture, look) ?: return null
+        if (!look.isIdentity) {
+            val packed = look.retouch?.takeIf { it.active }?.let { r -> faceData(picture, r) }
+            picture = effect(picture, look, packed ?: Packed.empty()) ?: return null
+        }
         if (square) {
             val (left, top, side) = AspectMath.squareCrop(picture.width, picture.height)
             val cut = Bitmap.createBitmap(picture, left, top, side, side)
@@ -67,8 +73,19 @@ object PhotoLook {
         }
     }
 
+    /** Finds the faces of the upright [picture] (on a copy at most 1280 px long, which is enough for the mesh) and turns them into shader data. */
+    private fun faceData(picture: Bitmap, r: com.claudeborne.camera.face.Retouch): Packed? = try {
+        val k = 1280f / maxOf(picture.width, picture.height)
+        val small = if (k < 1f) Bitmap.createScaledBitmap(picture, (picture.width * k).toInt().coerceAtLeast(1), (picture.height * k).toInt().coerceAtLeast(1), true) else picture
+        val finder = FaceFinder()
+        val faces = try { finder.find(small) } finally { finder.close(); if (small !== picture) small.recycle() }
+        if (faces.isEmpty()) null else RetouchOps.pack(faces, r, picture.width.toFloat() / picture.height)
+    } catch (_: Throwable) {
+        null // no faces found is a photo without retouch, never a lost photo
+    }
+
     /** Runs [source] through the effect shader on an offscreen surface. Returns the new picture (and recycles [source]), or null. */
-    private fun effect(source: Bitmap, look: Look): Bitmap? {
+    private fun effect(source: Bitmap, look: Look, faces: Packed): Bitmap? {
         val w = source.width
         val h = source.height
         val display = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY)
@@ -144,6 +161,7 @@ object PhotoLook {
             GLES20.glUniform4f(loc("uTilt"), v.tilt[0], v.tilt[1], v.tilt[2], v.tilt[3])
             GLES20.glUniform2f(loc("uOut"), 1f / w, 1f / h)
             GLES20.glUniform1f(loc("uAspect"), v.aspect)
+            FaceUniforms.apply(program, faces)
             val quad = ByteBuffer.allocateDirect(8 * 4).order(ByteOrder.nativeOrder()).asFloatBuffer().apply { put(floatArrayOf(-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f)); position(0) }
             val pos = GLES20.glGetAttribLocation(program, "aPos")
             GLES20.glEnableVertexAttribArray(pos)
@@ -190,8 +208,10 @@ object PhotoLook {
         #endif
         varying vec2 vUv;
         uniform sampler2D uTex;
-        vec3 texel(vec2 d) { return texture2D(uTex, vec2(d.x, 1.0 - d.y)).rgb; }
+        """ + Effects.WARP + """
+        vec3 texelRaw(vec2 b) { return texture2D(uTex, vec2(b.x, 1.0 - b.y)).rgb; }
+        vec3 texel(vec2 d) { return texelRaw(warpB(d)); }
         """ + Effects.UNIFORMS + Effects.FUNCTIONS + """
-        void main() { gl_FragColor = vec4(effect(vUv), 1.0); }
+        void main() { gMaskUv = vUv; gl_FragColor = vec4(effect(vUv), 1.0); }
     """
 }

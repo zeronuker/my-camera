@@ -71,7 +71,7 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /** Which page of the 6-dot menu is open. */
-internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR, SOFT, FILTERS, STYLES, SCENES }
+internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR, SOFT, FILTERS, STYLES, SCENES, RETOUCH }
 
 private val Glass = Color.Black.copy(alpha = 0.42f)
 
@@ -273,7 +273,7 @@ internal fun MenuPanel(
                 Menu.SOFT -> MenuPage("SOFT LIGHT", { onPage(Menu.MAIN) }) {
                     listOf(0, 3, 6, 9).forEach { Choice(com.claudeborne.camera.look.SoftLight.label(it), it == soft) { onSoft(it) } }
                 }
-                Menu.HDR, Menu.FILTERS, Menu.STYLES, Menu.SCENES -> Unit // pages of other panels
+                Menu.HDR, Menu.FILTERS, Menu.STYLES, Menu.SCENES, Menu.RETOUCH -> Unit // pages of other panels
             }
         }
     }

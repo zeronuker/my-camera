@@ -18,6 +18,8 @@ data class Look(
     val vignette: Boolean = false,
     val underwater: Boolean = false,
     val tilt: Tilt? = null,
+    /** Retouch sliders (faces smoothed and reshaped); null when none is on. The faces themselves are found separately, per frame. */
+    val retouch: com.claudeborne.camera.face.Retouch? = null,
 ) {
     val isIdentity get() = this == NONE
 
