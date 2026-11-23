@@ -78,7 +78,7 @@ fun Root() {
 }
 
 @Composable
-private fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
+internal fun Page(title: String, onBack: () -> Unit, content: @Composable () -> Unit) {
     val cb = LocalCb.current
     SystemBarIcons(darkIcons = !cb.isDark)
     Column(Modifier.fillMaxSize().cbGrid(cb).windowInsetsPadding(WindowInsets.safeDrawing)) {
@@ -98,12 +98,6 @@ private fun Card(content: @Composable () -> Unit) {
 
 @Composable
 private fun Body(text: String, color: Color = LocalCb.current.ink2) = Text(text, style = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = color))
-
-@Composable
-private fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) = Page("SETTINGS", onBack) {
-    Body("The General / Photo / Video settings come with the camera in Phase 1.")
-    BrandButton("ABOUT CAMERA", Modifier.fillMaxWidth(), onClick = onAbout)
-}
 
 @Composable
 private fun AboutScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) = Page("ABOUT CAMERA", onBack) {

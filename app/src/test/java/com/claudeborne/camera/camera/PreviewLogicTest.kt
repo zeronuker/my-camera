@@ -20,13 +20,36 @@ class PreviewLogicTest {
     }
 
     @Test fun activePillFollowsZoom() {
-        val atOne = ZoomStops.pills(1f)
+        val stops = ZoomStops.stops(1f)
+        val atOne = ZoomStops.pills(1f, stops)
         assertEquals(listOf("0.6", "1x", "2", "3.5", "7"), atOne.map { it.text })
         assertTrue(atOne[1].selected)
-        val between = ZoomStops.pills(2.46f)
+        val between = ZoomStops.pills(2.46f, stops)
         assertEquals("2.4x", between[2].text)
         assertTrue(between[2].selected)
-        assertEquals("0.6x", ZoomStops.pills(0.67f)[0].text)
+        assertEquals("0.6x", ZoomStops.pills(0.67f, stops)[0].text)
+    }
+
+    @Test fun defaultWideChangesTheOneXButton() {
+        val stops = ZoomStops.stops(ZoomStops.wideRatio(1)) // 28 mm
+        assertEquals(28f / 24f, stops[1], 0.001f)
+        assertEquals("1.1", ZoomStops.pills(2f, stops)[1].text) // labelled by where it jumps to
+        val atMain = ZoomStops.pills(1f, stops) // 24 mm is still in the wide button's range
+        assertTrue(atMain[1].selected)
+        assertEquals("1x", atMain[1].text)
+    }
+
+    @Test fun tappingTheActiveButtonStepsThroughFocalLengths() {
+        val wide = 1f
+        // 24 -> 28 -> 35 -> 24
+        assertEquals(28f / 24f, ZoomStops.next(1, 1f, wide, true, true, true)!!, 0.001f)
+        assertEquals(35f / 24f, ZoomStops.next(1, 28f / 24f, wide, true, true, true)!!, 0.001f)
+        assertEquals(1f, ZoomStops.next(1, 35f / 24f, wide, true, true, true)!!, 0.001f)
+        assertEquals(35f / 24f, ZoomStops.next(1, 1f, wide, false, true, true)!!, 0.001f) // 28 mm switched off
+        assertNull(ZoomStops.next(1, 1f, wide, false, false, true)) // nothing to step to
+        assertEquals(243f / 24f, ZoomStops.next(4, 7f, wide, true, true, true)!!, 0.001f)
+        assertNull(ZoomStops.next(4, 7f, wide, true, true, false))
+        assertNull(ZoomStops.next(2, 2f, wide, true, true, true))
     }
 
     @Test fun previewSizePrefersBiggestFourThree() {

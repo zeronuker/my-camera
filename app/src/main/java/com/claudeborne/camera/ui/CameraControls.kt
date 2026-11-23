@@ -221,13 +221,13 @@ internal fun MenuPanel(
                     MenuItem(Icon.INTERVAL, "Interval shooting", intervalSec > 0) { onPage(Menu.INTERVAL) }
                     MenuItem(Icon.GEAR, "Settings", false, onSettings)
                 }
-                Menu.ASPECT -> Page("ASPECT RATIO", { onPage(Menu.MAIN) }) {
+                Menu.ASPECT -> MenuPage("ASPECT RATIO", { onPage(Menu.MAIN) }) {
                     Aspect.entries.forEach { Choice(it.label, it == aspect) { onAspect(it) } }
                 }
-                Menu.TIMER -> Page("TIMER", { onPage(Menu.MAIN) }) {
+                Menu.TIMER -> MenuPage("TIMER", { onPage(Menu.MAIN) }) {
                     listOf(0, 3, 5, 10).forEach { Choice(if (it == 0) "Off" else "$it s", it == timerSec) { onTimer(it) } }
                 }
-                Menu.INTERVAL -> Page("INTERVAL SHOOTING", { onPage(Menu.MAIN) }) {
+                Menu.INTERVAL -> MenuPage("INTERVAL SHOOTING", { onPage(Menu.MAIN) }) {
                     listOf(0, 3, 5, 10).forEach { Choice(if (it == 0) "Off" else "$it s", it == intervalSec) { onInterval(it) } }
                 }
             }
@@ -246,7 +246,7 @@ private fun MenuItem(icon: Icon, label: String, active: Boolean, onClick: () -> 
 }
 
 @Composable
-private fun Page(title: String, onBack: () -> Unit, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
+private fun MenuPage(title: String, onBack: () -> Unit, content: @Composable androidx.compose.foundation.layout.RowScope.() -> Unit) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("‹  $title", Modifier.clickable(onClick = onBack), style = monoStyle(DarkCb.mint, 2.2.sp))
         Row(Modifier.fillMaxWidth(), Arrangement.spacedBy(8.dp)) { content() }
@@ -274,12 +274,12 @@ internal fun Countdown(seconds: Int?) {
 }
 
 @Composable
-internal fun LensPills(zoom: Float, onPick: (Float) -> Unit) {
+internal fun LensPills(zoom: Float, stops: FloatArray, onPick: (com.claudeborne.camera.camera.LensPill) -> Unit) {
     Row(Modifier.clip(CircleShape).background(Glass).padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
-        ZoomStops.pills(zoom).forEach { p ->
+        ZoomStops.pills(zoom, stops).forEach { p ->
             val fill by animateColorAsState(if (p.selected) Color(0x33FFFFFF) else Color.Transparent, tween(MOTION_FAST_MS), label = "pill")
             Box(
-                Modifier.height(40.dp).widthIn(min = 40.dp).clip(CircleShape).background(fill).clickable { onPick(p.stop) }.padding(horizontal = 10.dp),
+                Modifier.height(40.dp).widthIn(min = 40.dp).clip(CircleShape).background(fill).clickable { onPick(p) }.padding(horizontal = 10.dp),
                 Alignment.Center,
             ) { Text(p.text, style = monoStyle(glide(p.selected, DarkCb.mint, DarkCb.ink), 0.5.sp).copy(fontSize = 14.sp)) }
         }
@@ -288,7 +288,7 @@ internal fun LensPills(zoom: Float, onPick: (Float) -> Unit) {
 
 /** Shown while pinching: the zoom number and a log-scale ruler with the lens stops marked. */
 @Composable
-internal fun ZoomRuler(zoom: Float, min: Float, max: Float) {
+internal fun ZoomRuler(zoom: Float, min: Float, max: Float, stops: FloatArray) {
     Column(Modifier.clip(CircleShape).background(Glass).padding(horizontal = 20.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(ZoomStops.format(zoom) + "x", style = monoStyle(DarkCb.mint, 1.sp).copy(fontSize = 15.sp))
         Canvas(Modifier.width(240.dp).height(22.dp)) {
@@ -298,7 +298,7 @@ internal fun ZoomRuler(zoom: Float, min: Float, max: Float) {
                 val at = size.width * i / 40
                 drawLine(Color.White.copy(alpha = 0.35f), Offset(at, size.height * 0.55f), Offset(at, size.height), 1.dp.toPx())
             }
-            ZoomStops.rear.filter { it in min..max }.forEach { drawLine(Color.White.copy(alpha = 0.8f), Offset(x(it), size.height * 0.25f), Offset(x(it), size.height), 1.5.dp.toPx()) }
+            stops.filter { it in min..max }.forEach { drawLine(Color.White.copy(alpha = 0.8f), Offset(x(it), size.height * 0.25f), Offset(x(it), size.height), 1.5.dp.toPx()) }
             drawLine(DarkCb.mint, Offset(x(zoom.coerceIn(min, max)), 0f), Offset(x(zoom.coerceIn(min, max)), size.height), 2.dp.toPx())
         }
     }

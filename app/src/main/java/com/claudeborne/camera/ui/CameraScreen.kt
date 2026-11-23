@@ -64,6 +64,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.claudeborne.camera.camera.CameraEngine
 import com.claudeborne.camera.camera.CameraEngine.Facing
+import com.claudeborne.camera.camera.ZoomStops
 import com.claudeborne.camera.capture.Aspect
 import com.claudeborne.camera.capture.AspectMath
 import com.claudeborne.camera.capture.Ev
@@ -111,7 +112,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     var refused by remember { mutableStateOf(false) }
     var resumed by remember { mutableStateOf(true) }
     var facing by remember { mutableStateOf(Facing.BACK) }
-    var zoom by remember { mutableFloatStateOf(1f) }
+    var zoom by remember { mutableFloatStateOf(ZoomStops.wideRatio(AppSettings.defaultWide)) }
     var pinching by remember { mutableStateOf(false) }
     var showedPicture by remember { mutableStateOf(false) }
     var zoomJob by remember { mutableStateOf<Job?>(null) }
@@ -252,16 +253,18 @@ fun CameraScreen(onSettings: () -> Unit) {
 
     val zoomMin = info?.zoomMin ?: 1f
     val zoomMax = info?.zoomMax ?: 1f
+    val wide = ZoomStops.wideRatio(AppSettings.defaultWide)
+    val stops = ZoomStops.stops(wide)
     fun setEv(stops: Float) {
         ev = stops.coerceIn(-Ev.LIMIT, Ev.LIMIT)
         engine.setExposure(ev)
     }
     fun flip() {
         renderer.freeze() // keep the last picture while the other camera starts
-        zoom = 1f
         flash = Flash.OFF
         focusPoint = null
         facing = if (facing == Facing.BACK) Facing.FRONT else Facing.BACK
+        zoom = if (facing == Facing.BACK) wide else 1f
     }
     fun cycleFlash() {
         flash = flash.next(rear = facing == Facing.BACK)
@@ -419,8 +422,14 @@ fun CameraScreen(onSettings: () -> Unit) {
                     Column(Modifier.padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Box(Modifier.height(64.dp), Alignment.BottomCenter) {
                             Visible(evOpen, enter = popEnter, exit = popExit) { EvDial(ev, ::setEv) { setEv(0f) } }
-                            Visible(!evOpen && pinching, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax) }
-                            Visible(!evOpen && !pinching && facing == Facing.BACK, enter = popEnter, exit = popExit) { LensPills(zoom, ::goTo) }
+                            Visible(!evOpen && pinching, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
+                            Visible(!evOpen && !pinching && facing == Facing.BACK, enter = popEnter, exit = popExit) {
+                                LensPills(zoom, stops) { pill ->
+                                    // the active button steps through the extra focal lengths (28 / 35 mm, 243 mm); the others jump
+                                    if (pill.selected) ZoomStops.next(pill.index, zoom, wide, AppSettings.extra28, AppSettings.extra35, AppSettings.extra243)?.let(::goTo)
+                                    else goTo(pill.stop)
+                                }
+                            }
                         }
                         Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                             Thumbnail(thumb, PhotoSaver.saving > 0, ::openLast)
