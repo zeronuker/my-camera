@@ -19,6 +19,8 @@
         <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
         <intent><action android:name="android.media.action.VIDEO_CAMERA" /></intent>
         <intent><action android:name="android.media.action.VIDEO_CAPTURE" /></intent>
+        <!-- the Google Lens button is shown only when the Google app can take a picture -->
+        <package android:name="com.google.android.googlequicksearchbox" />
     </queries>
 
     <application

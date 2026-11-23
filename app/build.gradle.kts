@@ -36,7 +36,7 @@ android {
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"))
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             // no keystore (local builds) falls back to the debug key so the APK still installs
             signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
             // phone is arm64; -Pemulator also keeps x86_64 so a release build can be tried on the emulator
@@ -66,6 +66,8 @@ dependencies {
     implementation("com.google.mlkit:barcode-scanning:17.3.0")
     implementation("com.google.mlkit:text-recognition:16.0.1")
     implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    // Phase 6: hand landmarks for the show-palm timer (the model file is in assets)
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
     // Phase 6: finds the edges of a document and flattens it (official OpenCV for Android; release keeps arm64 only)
     implementation("org.opencv:opencv:4.10.0")
     testImplementation("junit:junit:4.13.2")

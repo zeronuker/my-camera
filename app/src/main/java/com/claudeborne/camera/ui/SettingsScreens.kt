@@ -95,6 +95,9 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                 Group(footer = "Tap anywhere in the viewfinder to take a photo. While on, tapping no longer sets the focus.") {
                     row { SwitchRow("Tap to capture", AppSettings.tapToCapture, { AppSettings.tapToCapture = it }) }
                 }
+                if (com.claudeborne.camera.scan.HandScanner.supported) Group(footer = "In Photo mode, hold an open palm facing the camera for a second: a 3 second timer starts, then the photo is taken. Works with the front and the rear camera.") {
+                    row { SwitchRow("Show palm", AppSettings.showPalm, { AppSettings.showPalm = it }) }
+                }
             }
             SettingsPage.LENS -> Page("LENS FOCAL LENGTH", up) {
                 Group("More focal lengths", "Tap the active zoom button again to switch between more focal lengths.") {
@@ -202,6 +205,7 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
     Group("Handy features") {
         row { NavRow("Volume button action", VOLUME_ACTIONS[AppSettings.volumeAction.coerceIn(0, 2)]) { open(SettingsPage.VOLUME) } }
         row { NavRow("Photo orientation", ORIENTATIONS[if (AppSettings.photoAutoRotate) 1 else 0]) { open(SettingsPage.ORIENTATION) } }
+        row { SwitchRow("Smart suggestions", AppSettings.smartSuggestions, { AppSettings.smartSuggestions = it }, "Short hints such as trying Text mode when a page of text is in view.") }
     }
     Group { row { NavRow("About Camera", onClick = onAbout) } }
 }
@@ -220,7 +224,7 @@ private fun VideoTab(open: (SettingsPage) -> Unit) {
 private fun PhotoTab(open: (SettingsPage) -> Unit) {
     Group {
         row { NavRow("Touch and hold shutter button", if (AppSettings.holdForBurst) "Burst" else "Off") { open(SettingsPage.HOLD) } }
-        row { NavRow("Shooting methods", if (AppSettings.tapToCapture) "Tap to capture" else "Off") { open(SettingsPage.METHODS) } }
+        row { NavRow("Shooting methods", listOfNotNull("Tap to capture".takeIf { AppSettings.tapToCapture }, "Show palm".takeIf { AppSettings.showPalm && com.claudeborne.camera.scan.HandScanner.supported }).joinToString(", ").ifEmpty { "Off" }) { open(SettingsPage.METHODS) } }
         row { NavRow("Lens focal length") { open(SettingsPage.LENS) } }
         row { NavRow("Text and QR code scanning", if (AppSettings.qrScan || AppSettings.recommendText) "On" else "Off") { open(SettingsPage.SCANNING) } }
     }

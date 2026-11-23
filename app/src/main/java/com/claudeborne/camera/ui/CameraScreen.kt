@@ -105,6 +105,7 @@ import com.claudeborne.camera.scan.Enhance
 import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
+import com.claudeborne.camera.scan.LensShare
 import com.claudeborne.camera.scan.FrameScanner
 import com.claudeborne.camera.scan.QrRules
 import com.claudeborne.camera.scan.TextRules
@@ -200,7 +201,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var proOpen by remember { mutableStateOf<ProParam?>(null) }
     var formatOpen by remember { mutableStateOf(false) }
     var histogramBins by remember { mutableStateOf<IntArray?>(null) }
-    val scanner = remember { FrameScanner() }
+    val scanner = remember { FrameScanner(context.applicationContext) }
+    val palmHook = remember { arrayOf<() -> Unit>({}) } // 0: the palm was seen long enough: start the 3 second timer
     var qr by remember { mutableStateOf<String?>(null) } // the last QR code seen; it goes away when it has not been seen for a while or is dismissed
     var qrSeenAt by remember { mutableLongStateOf(0L) }
     var textOutline by remember { mutableStateOf<Frac?>(null) }
@@ -391,16 +393,23 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val scanQr = mode == Mode.PHOTO && AppSettings.qrScan
     val scanText = (mode == Mode.TEXT && textResult == null && !readingText) || (mode == Mode.PHOTO && AppSettings.recommendText)
     val scanDoc = mode == Mode.SCAN && scanDraft == null && !scanSaveOpen
-    DisposableEffect(scanQr, scanText, scanDoc, mode) {
+    val scanPalm = mode == Mode.PHOTO && AppSettings.showPalm && com.claudeborne.camera.scan.HandScanner.supported && !launch.returnsResult
+    val hintsOn = AppSettings.smartSuggestions
+    DisposableEffect(scanQr, scanText, scanDoc, scanPalm, mode) {
         val inText = mode == Mode.TEXT
         var pass = 0
+        var palmStreak = 0
         renderer.analysisEveryMs = if (inText) 500L else 450L
-        renderer.analysis = if (scanQr || scanText || scanDoc) { rgba, w, h ->
+        renderer.analysis = if (scanQr || scanText || scanDoc || scanPalm) { rgba, w, h ->
             val wantText = scanText && (inText || pass++ % 3 == 0) // in Photo, text is only looked for now and then
-            scanner.look(rgba, w, h, scanQr, wantText, scanDoc) { hit ->
+            scanner.look(rgba, w, h, scanQr, wantText, scanDoc, scanPalm && runJob == null && countdown == null) { hit ->
                 if (scanDoc) docQuad = hit.quad
+                if (scanPalm) { // the palm has to stay in view for a few looks in a row, so a passing hand does not take a photo
+                    palmStreak = if (hit.palm) palmStreak + 1 else if (palmStreak < 0) palmStreak + 1 else 0
+                    if (palmStreak >= 3) { palmStreak = -8; palmHook[0]() } // then a pause, so one palm gives one photo
+                }
                 if (hit.qr != null) { qr = hit.qr; qrSeenAt = android.os.SystemClock.elapsedRealtime() }
-                if (wantText) { if (inText) textOutline = TextRules.outline(hit.lines, hit.chars) else suggestText = TextRules.recommend(hit.lines, hit.chars) }
+                if (wantText) { if (inText) textOutline = TextRules.outline(hit.lines, hit.chars) else suggestText = hintsOn && TextRules.recommend(hit.lines, hit.chars) }
             }
             Unit
         } else null
@@ -756,6 +765,28 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
 
+    // Google Lens: the current frame goes to the Google app; the button exists only where the Google app can take it
+    val lensOk = remember { LensShare.available(context) }
+    fun openLens() {
+        if (viewSize.width == 0) return
+        val h = (1080f * (if (boxHeight > 0) boxHeight else viewSize.height) / viewSize.width).toInt().coerceIn(64, 3000)
+        renderer.snapshot(1080, h, 0, false) { bitmap ->
+            if (bitmap == null) { say("Could not take the picture"); return@snapshot }
+            scope.launch(Dispatchers.IO) {
+                val uri = runCatching {
+                    val file = java.io.File(context.cacheDir, "share").apply { mkdirs() }.resolve("lens.jpg")
+                    file.outputStream().use { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 92, it) }
+                    bitmap.recycle()
+                    androidx.core.content.FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                }.getOrNull()
+                withContext(Dispatchers.Main) {
+                    if (uri == null) say("Could not take the picture")
+                    else try { context.startActivity(LensShare.intent(uri)) } catch (_: Exception) { say("Google Lens could not open") }
+                }
+            }
+        }
+    }
+
     fun selectMode(m: Mode) {
         if (m == mode || recording || savingVideo) return
         menu = Menu.NONE
@@ -794,14 +825,14 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     LaunchedEffect(state) { if (recording && state is CameraEngine.State.Error) stopRecording("The camera stopped. Your video is saved.") }
 
     /** Shutter tap: a timer run, an interval run or a single photo; a second tap while one is running stops it. */
-    fun shutterTap() {
+    fun shutterTap(timer: Int? = null) {
         if (mode.isVideo) return recordTap()
         menu = Menu.NONE
         evOpen = false
         if (runJob != null) { runJob?.cancel(); say("Stopped"); return }
         if (engine.state != CameraEngine.State.Streaming || engine.capturing || readingText) return
         if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
-        val timerNow = if (mode.isScanner) 0 else timerSec // Text and Scan Docs take one picture at once
+        val timerNow = if (mode.isScanner) 0 else timer ?: timerSec // Text and Scan Docs take one picture at once
         val intervalNow = if (mode.isScanner) 0 else intervalSec
         runJob = scope.launch {
             try {
@@ -826,6 +857,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             }
         }
     }
+    palmHook[0] = { if (mode == Mode.PHOTO && runJob == null) { say("Palm seen: 3 s"); shutterTap(3) } }
     fun holdStart() {
         if (mode.isVideo || mode.isScanner || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
         if (heat != Heat.OK) return say("No burst while the phone is hot")
@@ -937,6 +969,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
                 Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                    Visible(lensOk && (mode == Mode.PHOTO || mode == Mode.TEXT) && !launch.secure, enter = popEnter, exit = popExit) {
+                        RoundButton(onClick = ::openLens) { CbIcon(Icon.SEARCH, Color.White, size = 24.dp) }
+                    }
                     Visible(isMaster && proCaps?.raw == true, enter = popEnter, exit = popExit) {
                         QualityPill(masterFormat.label, formatOpen) { formatOpen = !formatOpen; menu = Menu.NONE; evOpen = false; proOpen = null }
                     }

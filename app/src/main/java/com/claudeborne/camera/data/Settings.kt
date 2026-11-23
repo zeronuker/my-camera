@@ -61,6 +61,8 @@ object Settings {
 
     var qrScan by Pref("qrScan", true) // look for QR codes in Photo mode
     var recommendText by Pref("recommendText", true) // suggest Text mode when text fills the frame
+    var showPalm by Pref("showPalm", true) // an open palm in front of the camera starts a 3 second timer (the stock default is on)
+    var smartSuggestions by Pref("smartSuggestions", true) // hints such as "Try Text mode"
 
     // Video
     var hevc by Pref("hevc", true) // High efficiency video; 10-bit HDR always uses it
