@@ -284,19 +284,19 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [x] | Diagnostics / probe report | OK | 0 |
 | [ ] | "Camera Dev" side-by-side build, emulator, scrcpy | OK | 0 |
 | [ ] | Crash log + share | OK | 0 |
-| [ ] | Permission flow + denied screen | OK | 1 |
+| [x] | Permission flow + denied screen | OK | 1 |
 | [ ] | Camera busy / disconnected / hot / storage full handled | OK | 1 |
-| [ ] | Camera released on background (bank scanner works after) | OK | 1 |
-| [ ] | Lens pills 0.6/1/2/3.5/7 + pinch zoom | OK | 1 |
-| [ ] | Extra focal lengths 28/35/243 mm, default 24/28/35 | OK | 1 |
-| [ ] | Flash off/auto/on/torch, front screen flash | OK | 1 |
-| [ ] | Tap focus/exposure, AE/AF lock, EV dial | OK | 1 |
-| [ ] | Aspect ratio, timer, interval shooting | OK | 1 |
-| [ ] | HEIF/JPEG, EXIF, location, mirror selfie, shutter sound, orientation | OK | 1 |
-| [ ] | Volume key action, tap to capture, hold for burst | OK | 1 |
-| [ ] | Thumbnail opens my-gallerymanager | OK | 1 |
+| [x] | Camera released on background (bank scanner works after) | OK | 1 |
+| [x] | Lens pills 0.6/1/2/3.5/7 + pinch zoom | OK | 1 |
+| [x] | Extra focal lengths 28/35/243 mm, default 24/28/35 | OK | 1 |
+| [x] | Flash off/auto/on/torch, front screen flash | OK | 1 |
+| [x] | Tap focus/exposure, AE/AF lock, EV dial | OK | 1 |
+| [x] | Aspect ratio, timer, interval shooting | OK | 1 |
+| [x] | HEIF/JPEG, EXIF, location, mirror selfie, shutter sound, orientation | OK | 1 |
+| [x] | Volume key action, tap to capture, hold for burst | OK | 1 |
+| [x] | Thumbnail opens my-gallerymanager | OK | 1 |
 | [ ] | OnePlus AUTOMATIC/HDR processing for normal photos | NO (not exposed; best plain capture + Ultra HDR instead) | 1 |
-| [ ] | Ultra HDR JPEG (JPEG_R) photos | OK | 1 |
+| [x] | Ultra HDR JPEG (JPEG_R) photos | OK | 1 |
 | [ ] | Video 720p / 1080p / 2K / 4K × 30/60 all lenses; 4K120 main only; 1080p120 all rear | OK | 2 |
 | [ ] | 8K video | NO (camera outputs max 4096x3072 to apps) | — |
 | [ ] | 10-bit HDR video HLG10 / HDR10 / HDR10+ | OK | 2 |
