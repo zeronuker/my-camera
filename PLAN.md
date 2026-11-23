@@ -6,8 +6,9 @@ part of a phase), ticks the checklist, and stops.
 
 - Repo: `C:\Users\Amir Rashid\my-camera` → GitHub `zeronuker/my-camera` (public; created in Phase 0 with the owner's OK)
 - App name: **Camera** · package: `com.claudeborne.camera` (never change it later: Android would treat it as a new app)
-- Target phone: OnePlus 15, Android 16. Rear: 50MP main 24mm f/1.8 OIS, 50MP ultrawide 16mm, 50MP 3.5x periscope
+- Target phone: OnePlus 15 (CPH2747), **Android 17 (SDK 37)**, OxygenOS build CPH2747_17.0.0.102. Rear: 50MP main 24mm f/1.8 OIS, 50MP ultrawide 16mm, 50MP 3.5x periscope
   (73mm, in-sensor crop to 7x). Front: 32MP AF.
+- **What apps actually get (probe 2026-11-23, `docs/camera-probe.json`):** logical rear camera `0` (zoom 0.67–20) with physical `2` main (5.59 mm f/1.88, min focus 10 cm), `3` ultrawide (2.31 mm f/2.0, min focus 3.5 cm), `4` tele (12.19 mm f/2.85, min focus 40 cm); front `1` (3.23 mm f/2.4, no flash). Every lens outputs at most 4096x3072 (12.6 MP, binned; front 3280x2464). All LEVEL_3 with MANUAL_SENSOR, RAW, 10-bit, JPEG_R. Camera Extensions: BOKEH + NIGHT on rear `0`, NIGHT on front `1`, nothing else. OIS not controllable. Re-run Diagnostics after OxygenOS updates; if anything new appears, update this file.
 - Stock UI reference: `docs/stock-reference/` (45 screenshots of the stock app named by screen, plus two Soft light sample photos 46/47). Local only — git-ignored, never pushed.
 
 ## Decisions already made (do not re-ask)
@@ -43,7 +44,7 @@ part of a phase), ticks the checklist, and stops.
 Same toolchain as my-gallerymanager, so builds are known to work:
 
 - Kotlin 2.0.21, Jetpack Compose (BOM 2024.10.01), AGP 8.7.3, Gradle 8.9 (CI), JDK 17.
-- `compileSdk 35`, `targetSdk 35`, `minSdk 34` (single-device app; 34 gives Ultra HDR JPEG and the newer Camera2 APIs without fallbacks). Raise compileSdk to 36 only if the probe shows an Android 16 API we need.
+- `compileSdk 35`, `targetSdk 35`, `minSdk 34` (single-device app; 34 gives Ultra HDR JPEG and the newer Camera2 APIs without fallbacks). The phone runs Android 17 (SDK 37); the app runs there unchanged. Raise compileSdk only if a later phase needs an API 36/37 feature, with the owner's OK.
 - **Camera2 directly, no CameraX.** CameraX cannot drive physical lenses separately, multi-stream sessions, manual sensor control or high-speed sessions the way this app needs.
 - **One OpenGL preview/record pipeline from day one** (`gl/`): camera → `SurfaceTexture` → shader chain → screen + video encoder surface + analysis frames. Filters, master styles, tilt-shift, retouch, video watermark, video depth-of-field and dual-view composition all plug into it. Building it later would mean rewriting the preview.
 - Video: `MediaCodec` + `MediaMuxer` (not `MediaRecorder`), so frames can pass through the GL pipeline.
@@ -125,7 +126,7 @@ Build:
   - Which app currently answers `STILL_IMAGE_CAMERA`, `STILL_IMAGE_CAMERA_SECURE`, `IMAGE_CAPTURE`, `VIDEO_CAMERA`.
 - Manifest already declares those camera intents, so the owner can set this app as default camera and test the power-button double-press (result recorded in the checklist below).
 
-Done when: APK installs; the app updates itself from a second CI build; "Camera Dev" installs next to it from the PC and runs on the emulator; scrcpy shows the phone on the PC; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.**
+Done when: APK installs; the app updates itself from a second CI build; "Camera Dev" installs next to it from the PC and runs on the emulator; scrcpy shows the phone on the PC; Diagnostics shows all sections and saves the JSON; the owner sends the JSON. **Then an Opus session reads it and rewrites every PROBE tag in this file to OK or NO.** (Done 2026-11-23 from `docs/camera-probe.json`; only the power double-press is still PROBE, pending the owner's test.)
 
 ### Phase 1 — photo mode core
 
@@ -145,17 +146,18 @@ Viewfinder layout exactly as `01-photo-mode.jpg`, in the ClaudeBorne look. Butto
 - Volume keys: shutter / zoom / volume (setting). Touch-and-hold shutter: burst (Clear / Classic). Tap anywhere to capture (setting).
 - Thumbnail → opens the photo in my-gallerymanager (`ACTION_VIEW` with `setPackage`, falling back to a chooser). Swiping comes in Phase 3.
 - Settings screen skeleton: back button, segmented tabs General / Photo / Video, grouped cards (`10-settings-general-tab.jpg`), with every row from the Settings section below present; rows for later phases are hidden until built.
-- Use OnePlus's AUTOMATIC/HDR extension for normal photos if the probe found one; otherwise best plain capture (max-quality JPEG, HQ noise reduction and edge modes).
+- Normal photos: best plain capture (max-quality JPEG, HIGH_QUALITY noise reduction and edge modes, 4096x3072). OnePlus exposes no AUTOMATIC/HDR extension (probe). Save as **Ultra HDR JPEG (JPEG_R)** by default when the format is JPEG; HEIF per Formats setting.
 
 Done when: every control above works on the phone; photos land in `DCIM/Camera` with correct rotation, mirror and location; the gallery manager opens them.
 
 ### Phase 2 — video
 
 - Video mode layout as `03-video-mode.jpg`; red record button, timer, pause/resume, snapshot while recording (still photo or motion photo, per setting).
-- Quality pill picker: 720p / 1080p / 2K / 4K / 8K × 30 / 60 / 120 fps — only combinations the probe allows.
-- Video 6-dot menu (`45-video-6dot-menu-b.jpg`): 10-bit HDR (instead of Dolby Vision), Ultra Steady, Focus lock, Settings.
+- Quality pill picker: 720p / 1080p / 2K / 4K × 30 / 60 on every lens; 4K 120 on the main lens only and 1080p 120 on all rear lenses (both via constrained high-speed session; check the GL pipeline holds 120 fps). **No 8K**: the camera gives apps at most 4096x3072. Hide combinations the current lens cannot do.
+- Video 6-dot menu (`45-video-6dot-menu-b.jpg`): 10-bit HDR (HLG10 / HDR10 / HDR10+, HEVC Main10; instead of Dolby Vision), Ultra Steady (= Android `PREVIEW_STABILIZATION`, not OnePlus's own), Focus lock, Settings.
+- Dolby Vision check: the camera lists `DOLBY_VISION_10B_HDR_OEM`. Look for a `video/dolby-vision` encoder; if one exists and a test recording plays back as Dolby Vision, add it (owner's OK first); otherwise leave it NO.
 - Stabilisation, HEVC/AVC switch, bitrate Standard/High, adaptive frame rate (off / 30 / 30+60), lock lens, lock white balance, smooth lens switching while recording.
-- Slo-mo (high-speed session; fps per probe), Time-lapse (speed choices).
+- Slo-mo (constrained high-speed session): 1080p / 720p at 120 or 240 fps on all rear lenses, 4K 120 on the main lens; not on the front camera. Time-lapse (speed choices).
 - Audio: stereo AAC; wind noise not promised.
 
 Done when: each resolution/fps the probe allowed records, plays in the gallery manager, and has sound.
@@ -177,8 +179,8 @@ Done when: the power double-press (if supported), QS tile and lock-screen launch
 - Pro controls: ISO, shutter speed, white balance (presets + Kelvin), manual focus, EV — each with an AUTO state. Only what MANUAL_SENSOR allows.
 - Master 6-dot menu (`41-master-6dot-menu.jpg`): Aspect ratio, Timer, Histogram, Face metering, Interval shooting, Settings.
 - Assistants: live histogram, focus peaking, zebra stripes, level.
-- RAW DNG via `DngCreator` (PROBE: which lenses give RAW).
-- Pro video (More → PRO VIDEO): the same manual controls while recording, shutter shown as shutter angle option, audio level meter, log-style flat profile (OnePlus log if exposed — PROBE; else our own flat tone curve), LUT preview.
+- RAW DNG via `DngCreator`: every lens including the front, 12 MP (4096x3072; front 3280x2464).
+- Pro video (More → PRO VIDEO): the same manual controls while recording, shutter shown as shutter angle option, audio level meter, our own log-style flat profile (no OnePlus log exposed; tonemap CONTRAST_CURVE or a GL curve, best on 10-bit HLG), LUT preview.
 
 ### Phase 5 — looks and overlays
 
@@ -202,28 +204,30 @@ Done when: the power double-press (if supported), QS tile and lock-screen launch
 
 ### Phase 7 — computational photography (Opus)
 
-Each feature: use the OnePlus extension if the probe found it, else our own pipeline.
-- Night mode + night badge in Photo (`1s` pill) + tripod detection for longer exposures. PROBE (NIGHT extension) / own multi-frame align + merge.
-- Auto HDR. PROBE (HDR extension) / own bracket merge. Save Ultra HDR JPEG where supported.
-- Hi-Res mode and Formats → High resolution (50MP, max-resolution sensor mode). PROBE.
+Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extension sessions give a finished JPEG: no manual controls, no RAW, and our looks (filters, Soft light, styles) are applied to the decoded photo afterwards, not live in the session; preview still runs through our GL pipeline.
+- Night mode + night badge in Photo (`1s` pill): NIGHT extension, rear and front. Tripod detection for longer exposures only if the extension allows it; else our own multi-frame align + merge as the "long night" option.
+- Daytime experiment: shoot the same daylight scenes with plain capture and with the NIGHT extension; the owner compares on the phone. Offer it as the normal photo path only if it is clearly better and not too slow.
+- Auto HDR: our own bracket merge (no HDR extension). Ultra HDR JPEG is already the Phase 1 default.
+- Hi-Res 50MP: **NO** — no ULTRA_HIGH_RESOLUTION_SENSOR, no max-resolution sizes; apps get 12.6 MP binned. Hi-Res mode and Formats → High resolution are not shown.
 - Action mode (fast shutter priority), Clear burst vs Classic burst.
 - Long exposure mode (light trails, silky water, star trails: frame stacking).
 - Live / Motion photo (Google Motion Photo format: JPEG + embedded MP4 + XMP), photo and in-video capture.
-- Portrait mode (`02-portrait-mode.jpg`): lenses 1 / 2 / 3.5, f-number blur slider, distance hints. PROBE (BOKEH extension) / own segmentation + depth blur. Video depth of field (`f/2.8` in Video). PROBE / own.
+- Portrait mode (`02-portrait-mode.jpg`): lenses 1 / 2 / 3.5, f-number blur slider, distance hints. Rear: BOKEH extension (capture 4096x3072, preview 1280x960; check whether its blur strength can be set, else the f-number slider uses our own blur). Front: own segmentation + depth blur. Video depth of field (`f/2.8` in Video): own.
 - Panorama (OpenCV stitching, guided sweep UI).
-- Macro shot + auto-macro switch to the ultrawide when close. PROBE (needs ultrawide close-focus access).
+- Macro shot + auto-macro switch to the ultrawide (physical `3`, focuses to 3.5 cm) when close.
 - AI Telescope Zoom: Real-ESRGAN upscale on long-zoom shots (slow; progress bar).
 
 ### Phase 8 — retouch / beauty (Opus)
 
 - Retouch panel (`12-retouch-presets.jpg`, `11`, `15`, `16`): presets Original / Natural / Classic; Reset; sliders Skin texture, Skin tone, Cheeks, Head size, Eye size, Face width, Face length, Hairline, Temples, Cheekbones, Nose. Live, via face mesh + GL warp and skin smoothing; same result in the saved photo.
 - Portrait distortion correction (setting): straighten faces near the ultrawide edges.
-- FACE_RETOUCH extension used instead if the probe found it and it looks better.
+- All our own: the phone exposes no FACE_RETOUCH extension.
 
 ### Phase 9 — dual view and quad view (Opus)
 
 - Dual-view video (More): front + rear. Layouts: PiP (move, resize, swap), top-bottom, side-by-side. Record combined (GL composite) or two files (setting). Photo capture of the composite.
-- Quad view (3 rear + front): only the combination the probe proved works. If none beyond dual, the mode is not shown.
+- Probe: front `1` + rear `0` are a concurrent set, and front + 3 physical rear streams configured successfully. Dual view is OK.
+- Quad view (3 rear + front): session proven. Phase 9 must check it streams smoothly (target 30 fps per tile, reduced stream sizes) and stays cool for a few minutes; if not, offer the largest combination that does (e.g. 2 rear + front).
 
 ### Phase 10 — polish
 
@@ -244,7 +248,7 @@ Each feature: use the OnePlus extension if the probe found it, else our own pipe
 | Text | Aspect ratio, Settings |
 
 Modes on the strip: MASTER · VIDEO · PHOTO · PORTRAIT · TEXT · MORE.
-More grid (`06-more-modes-grid.jpg`): Night, Hi-Res, Pano, Pro Video, Slo-mo, Time-lapse, Long exposure, Dual-view video, Underwater, Scan Docs, Tilt-shift (+ Quad view if possible). Pencil = reorder.
+More grid (`06-more-modes-grid.jpg`): Night, Pano, Pro Video, Slo-mo, Time-lapse, Long exposure, Dual-view video, Underwater, Scan Docs, Tilt-shift, Quad view. (Stock Hi-Res: NO, see Phase 7.) Pencil = reorder.
 
 ## Settings — from the stock app (plus ours)
 
@@ -252,7 +256,7 @@ More grid (`06-more-modes-grid.jpg`): Night, Hi-Res, Pano, Pro Video, Slo-mo, Ti
 - Watermark › (on/off, add to, Shot on / Location / Date and time / Custom text, Font size, Position)
 - Composition assistance › (Grid and guides: None / Grid / Diagonal lines / Golden spiral; Level)
 - Shutter sound · Mirror selfie · Add location tags
-- Formats › (Photo: Standard / High resolution; High efficiency image (HEIF; motion photos fall back to JPEG); Video: High efficiency video (HEVC))
+- Formats › (Photo: Ultra HDR on/off — High resolution is NO, row not shown; High efficiency image (HEIF; motion photos fall back to JPEG); Video: High efficiency video (HEVC))
 - Preserve settings › (Shooting mode, Styles & effects, Creative effects, Exposure setting, Auto macro, Motion Photo, AI Telescope Zoom, Portrait mode zooming; Pro: Pro assistance, Metering, Photo formats)
 - *Handy features:* Volume button action (Volume / Shutter / Zoom) · Photo orientation (Follow system / Auto-rotate) · Smart suggestions
 - Quick launch — **NO** (see Phase 3); row not shown.
@@ -291,26 +295,28 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [ ] | HEIF/JPEG, EXIF, location, mirror selfie, shutter sound, orientation | OK | 1 |
 | [ ] | Volume key action, tap to capture, hold for burst | OK | 1 |
 | [ ] | Thumbnail opens my-gallerymanager | OK | 1 |
-| [ ] | OnePlus AUTOMATIC/HDR processing for normal photos | PROBE | 1 |
-| [ ] | Video 720p–8K × 30/60/120 | PROBE | 2 |
-| [ ] | 10-bit HDR video (Dolby Vision is NO) | PROBE | 2 |
-| [ ] | Ultra Steady / stabilisation | PROBE | 2 |
+| [ ] | OnePlus AUTOMATIC/HDR processing for normal photos | NO (not exposed; best plain capture + Ultra HDR instead) | 1 |
+| [ ] | Ultra HDR JPEG (JPEG_R) photos | OK | 1 |
+| [ ] | Video 720p / 1080p / 2K / 4K × 30/60 all lenses; 4K120 main only; 1080p120 all rear | OK | 2 |
+| [ ] | 8K video | NO (camera outputs max 4096x3072 to apps) | — |
+| [ ] | 10-bit HDR video HLG10 / HDR10 / HDR10+ | OK | 2 |
+| [ ] | Ultra Steady / stabilisation (Android PREVIEW_STABILIZATION) | OK | 2 |
 | [ ] | Focus lock, lock lens, lock WB, bitrate, adaptive fps, HEVC | OK | 2 |
 | [ ] | Photo while recording (still / motion) | OK | 2 |
-| [ ] | Slo-mo | PROBE | 2 |
+| [ ] | Slo-mo 1080p/720p 240 fps all rear, 4K120 main; none on front | OK | 2 |
 | [ ] | Time-lapse | OK | 2 |
-| [ ] | Default camera + power double-press launch | PROBE | 3 |
+| [ ] | Default camera + power double-press launch | PROBE (owner test on the phone; app already answers the intents) | 3 |
 | [ ] | Other apps' "take a photo" (`IMAGE_CAPTURE`) | NO by default (Android 11+: stock camera only; works only from apps with a chooser) | 3 |
 | [ ] | **Beta 1 milestone** (Phases 0–3 confirmed) | — | 3 |
 | [ ] | Lock-screen secure mode + mini viewer | OK | 3 |
 | [ ] | Swipe through roll in my-gallerymanager | OK | 3 |
 | [ ] | QS tile, launcher shortcuts | OK | 3 |
 | [ ] | Quick launch via volume keys, screen off | NO | — |
-| [ ] | Master Auto/Pro manual controls | PROBE | 4 |
-| [ ] | RAW / RAW+JPG | PROBE | 4 |
+| [ ] | Master Auto/Pro manual controls | OK | 4 |
+| [ ] | RAW / RAW+JPG (12 MP, all lenses + front) | OK | 4 |
 | [ ] | Histogram, focus peaking, zebra, face metering | OK | 4 |
 | [ ] | Pro video, audio meter | OK | 4 |
-| [ ] | Log video | PROBE | 4 |
+| [ ] | Log video | OnePlus log NO; own flat profile OK | 4 |
 | [ ] | Filters (own looks) | OK | 5 |
 | [ ] | Master styles page | OK | 5 |
 | [ ] | Scenes Stage/Silhouette/Fireworks (via Video label dropdown) | OK | 5 |
@@ -324,23 +330,24 @@ Tick `[x]` when the owner has confirmed it on the phone. Update the tag after th
 | [ ] | Google Lens button | OK | 6 |
 | [ ] | Show-palm timer | OK | 6 |
 | [ ] | Smart suggestions | OK | 6 |
-| [ ] | Night mode + night badge | PROBE / own | 7 |
-| [ ] | Auto HDR, Ultra HDR JPEG | PROBE / own | 7 |
-| [ ] | Hi-Res 50MP | PROBE | 7 |
+| [ ] | Night mode + night badge (NIGHT extension, rear + front) | OK | 7 |
+| [ ] | Daytime NIGHT-extension experiment (keep only if it beats plain capture) | OK | 7 |
+| [ ] | Auto HDR (own bracket merge) | OK | 7 |
+| [ ] | Hi-Res 50MP | NO (no ULTRA_HIGH_RESOLUTION_SENSOR; apps get 12.6 MP binned) | — |
 | [ ] | Action mode, Clear/Classic burst | OK | 7 |
 | [ ] | Long exposure | OK | 7 |
 | [ ] | Live / Motion photo | OK | 7 |
-| [ ] | Portrait blur photo | PROBE / own | 7 |
-| [ ] | Video depth of field | PROBE / own | 7 |
+| [ ] | Portrait blur photo (BOKEH extension rear; own for front) | OK | 7 |
+| [ ] | Video depth of field (own) | OK | 7 |
 | [ ] | Panorama | OK | 7 |
-| [ ] | Macro shot + auto macro | PROBE | 7 |
+| [ ] | Macro shot + auto macro (ultrawide, 3.5 cm) | OK | 7 |
 | [ ] | AI Telescope Zoom | OK | 7 |
 | [ ] | Retouch presets + 11 sliders | OK | 8 |
 | [ ] | Portrait distortion correction | OK | 8 |
-| [ ] | Dual-view video, all layouts | PROBE | 9 |
-| [ ] | Quad view | PROBE | 9 |
+| [ ] | Dual-view video, all layouts | OK | 9 |
+| [ ] | Quad view (session proven; smoothness/heat checked in Phase 9) | OK | 9 |
 | [ ] | Preserve settings, restore defaults, privacy, mode reorder | OK | 10 |
-| [ ] | Dolby Vision recording | NO (10-bit HDR instead) | — |
+| [ ] | Dolby Vision recording | NO for now (camera lists a DV profile; Phase 2 checks for a `video/dolby-vision` encoder) | — |
 
 ## Open questions
 
