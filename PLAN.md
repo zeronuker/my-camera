@@ -179,6 +179,8 @@ Done when: each resolution/fps the probe allowed records, plays in the gallery m
 - Quick Settings tile, launcher long-press shortcuts (selfie, video).
 - **Quick launch by double-pressing a volume key with the screen off: NO** (Android does not deliver key presses to apps while the screen is off). Substitutes: power-button double-press via default camera (if the probe test passed), lock-screen shortcut, QS tile.
 
+**Built in Phase 3 (camera side):** `LaunchRequest` maps the intents to a start mode (STILL, VIDEO, SECURE_STILL, IMAGE_CAPTURE, VIDEO_CAPTURE) and the launcher shortcuts (Selfie, Video); `MainActivity` is `singleTop` and takes `onNewIntent`. A lock-screen launch shows over the lock, hides Settings and the update dialog, forgets every earlier picture (also when it reaches a camera that was already open), and its thumbnail opens `SessionViewer` (only this launch's shots). IMAGE_CAPTURE / VIDEO_CAPTURE take one shot, copy it to `EXTRA_OUTPUT` (or return its Uri and a small picture) and close. The Quick Settings tile opens the camera (the lock-screen camera when locked). The thumbnail sends `com.android.camera.action.REVIEW` to the gallery manager first and falls back to a plain view; **the gallery manager side (accept REVIEW, open its viewer on the camera album at that item) is not done: it is a separate change in my-gallerymanager and needs the owner's OK.**
+
 Done when: the power double-press (if supported), QS tile and lock-screen launch open this app; locked users cannot see older photos; unlocked thumbnail swipes through the roll.
 
 ### Phase 4 — Master (Pro) and Pro video
