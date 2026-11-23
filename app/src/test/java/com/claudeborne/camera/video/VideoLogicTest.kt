@@ -79,6 +79,15 @@ class VideoLogicTest {
         assertFalse(VideoQuality.adaptive(0, 30))
     }
 
+    @Test fun stabilisationChoice() {
+        assertEquals(2, VideoQuality.stabilisation(caps, ultra = true, highSpeed = false))
+        assertEquals(1, VideoQuality.stabilisation(caps, ultra = false, highSpeed = false))
+        assertEquals(0, VideoQuality.stabilisation(caps, ultra = true, highSpeed = true))
+        val basic = VideoCaps(sizes, aeRanges, hs, setOf(0, 1), emptySet())
+        assertEquals(1, VideoQuality.stabilisation(basic, ultra = true, highSpeed = false)) // no Ultra Steady offered: plain stabilisation
+        assertEquals(0, VideoQuality.stabilisation(VideoCaps(sizes, aeRanges, hs, setOf(0), emptySet()), ultra = false, highSpeed = false))
+    }
+
     @Test fun lensZones() {
         assertEquals(0, LensZone.of(0.67f))
         assertEquals(1, LensZone.of(1f))

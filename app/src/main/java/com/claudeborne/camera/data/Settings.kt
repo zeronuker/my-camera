@@ -59,12 +59,29 @@ object Settings {
     var extra243 by Pref("extra243", true)
     var defaultWide by Pref("defaultWide", 0) // the "1x" button: 0 = 24 mm, 1 = 28 mm, 2 = 35 mm
 
+    // Video
+    var hevc by Pref("hevc", true) // High efficiency video; 10-bit HDR always uses it
+    var bitrateHigh by Pref("bitrateHigh", true) // Bitrate: High quality (the stock default) or Standard
+    var adaptiveFps by Pref("adaptiveFps", 2) // 0 off, 1 for 30 fps videos, 2 for 30 and 60 fps videos (the stock default)
+    var lockLens by Pref("lockLens", false)
+    var lockWb by Pref("lockWb", false)
+    var ultraSteady by Pref("ultraSteady", false) // Android's preview stabilisation (crops the picture a little)
+    var videoHdr by Pref("videoHdr", 0) // 0 off, 1 HLG10, 2 HDR10
+    var videoRes by Pref("videoRes", 3) // index into Res (3 = 4K)
+    var videoFps by Pref("videoFps", 30)
+    var sloRes by Pref("sloRes", 1) // 1080p
+    var sloFps by Pref("sloFps", 240)
+    var lapseSpeed by Pref("lapseSpeed", 30)
+
     var lastPhotoUri by Pref("lastPhotoUri", "")
+    var lastIsVideo by Pref("lastIsVideo", false)
 
     fun init(context: Context) {
         prefs = context.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         all.forEach { it.load() }
     }
 
-    fun rememberLastPhoto(uri: String) { lastPhotoUri = uri }
+    fun rememberLast(uri: String, video: Boolean) { lastPhotoUri = uri; lastIsVideo = video }
+
+    fun rememberLastPhoto(uri: String) = rememberLast(uri, false)
 }

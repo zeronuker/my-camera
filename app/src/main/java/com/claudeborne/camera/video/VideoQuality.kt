@@ -91,6 +91,14 @@ object VideoQuality {
         return if (adaptive) loose ?: fixed else fixed ?: loose
     }
 
+    /** The stabilisation mode to request: Ultra Steady (preview stabilisation) if wanted and offered, else normal, else none. High-speed has none. */
+    fun stabilisation(caps: VideoCaps, ultra: Boolean, highSpeed: Boolean): Int = when {
+        highSpeed -> 0
+        ultra && caps.previewStabilisation -> 2
+        1 in caps.stabModes -> 1
+        else -> 0
+    }
+
     /** Adaptive frame rate setting: 0 off, 1 for 30 fps videos only, 2 for 30 and 60 fps videos. */
     fun adaptive(setting: Int, fps: Int) = (setting == 1 && fps == 30) || (setting == 2 && (fps == 30 || fps == 60))
 }

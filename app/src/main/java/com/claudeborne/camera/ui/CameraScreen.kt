@@ -14,6 +14,7 @@ import android.provider.Settings
 import android.view.OrientationEventListener
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.animateIntAsState
@@ -23,6 +24,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -37,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -78,6 +82,17 @@ import com.claudeborne.camera.capture.PhotoSaver
 import com.claudeborne.camera.data.Settings as AppSettings
 import com.claudeborne.camera.gl.PreviewMath
 import com.claudeborne.camera.gl.PreviewRenderer
+import com.claudeborne.camera.capture.StillFormat
+import com.claudeborne.camera.video.Encoders
+import com.claudeborne.camera.video.Hdr
+import com.claudeborne.camera.video.LensZone
+import com.claudeborne.camera.video.Res
+import com.claudeborne.camera.video.TimeLapse
+import com.claudeborne.camera.video.VideoOption
+import com.claudeborne.camera.video.VideoQuality
+import com.claudeborne.camera.video.VideoRecorder
+import com.claudeborne.camera.video.VideoRules
+import com.claudeborne.camera.video.VideoStyle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -87,6 +102,9 @@ import kotlinx.coroutines.withContext
 
 private fun hasCamera(context: Context) =
     context.checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED
+
+private fun hasMic(context: Context) =
+    context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
 
 private const val GALLERY = "com.claudeborne.gallerymanager"
 
@@ -109,7 +127,7 @@ fun CameraScreen(onSettings: () -> Unit) {
     val engine = remember { CameraEngine(context.applicationContext) }
     var glView by remember { mutableStateOf<GLSurfaceView?>(null) }
     var texture by remember { mutableStateOf<SurfaceTexture?>(null) }
-    val renderer = remember { PreviewRenderer(requestRender = { glView?.requestRender() }, onTexture = { texture = it }) }
+    val renderer = remember { PreviewRenderer(requestRender = { glView?.requestRender() }, onTexture = { texture = it }, post = { block -> glView?.queueEvent { block() } }) }
     var viewSize by remember { mutableStateOf(IntSize.Zero) }
     var permitted by remember { mutableStateOf(hasCamera(context)) }
     var refused by remember { mutableStateOf(false) }
@@ -138,7 +156,23 @@ fun CameraScreen(onSettings: () -> Unit) {
     var deviceDegrees by remember { mutableIntStateOf(0) }
     var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
     var heat by remember { mutableStateOf(Heat.OK) }
-    val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK) } }
+    val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK); load(MediaActionSound.START_VIDEO_RECORDING); load(MediaActionSound.STOP_VIDEO_RECORDING) } }
+    var mode by remember { mutableStateOf(Mode.PHOTO) }
+    val isVideo = mode.isVideo
+    var recorder by remember { mutableStateOf<VideoRecorder?>(null) }
+    var recording by remember { mutableStateOf(false) }
+    var recPaused by remember { mutableStateOf(false) }
+    var recMs by remember { mutableLongStateOf(0L) }
+    var savingVideo by remember { mutableStateOf(false) }
+    var recTurn by remember { mutableIntStateOf(0) }
+    var recSize by remember { mutableStateOf(1080 to 1920) }
+    var recOption by remember { mutableStateOf<VideoOption?>(null) }
+    var recHdr by remember { mutableStateOf(false) }
+    var recLens by remember { mutableStateOf<ClosedFloatingPointRange<Float>?>(null) }
+    var focusHeld by remember { mutableStateOf(false) }
+    var qualityOpen by remember { mutableStateOf(false) }
+    var micAsk by remember { mutableStateOf<Boolean?>(null) } // null: closed, false: ask, true: Android no longer asks (settings)
+    val leaveHooks = remember { arrayOf<() -> Unit>({}, {}) } // 0: finish a recording when the screen goes; 1: start one once the microphone is allowed
     fun say(text: String) { toast = text to ((toast?.second ?: 0) + 1) }
 
     val askCamera = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
@@ -146,12 +180,19 @@ fun CameraScreen(onSettings: () -> Unit) {
         refused = !ok
     }
     LaunchedEffect(Unit) { if (!permitted) askCamera.launch(Manifest.permission.CAMERA) }
+    val askMic = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+        if (ok) { micAsk = null; leaveHooks[1]() } else {
+            val a = context as? Activity
+            micAsk = a != null && !a.shouldShowRequestPermissionRationale(Manifest.permission.RECORD_AUDIO) // true: Android will not ask again
+        }
+    }
 
     // the viewfinder band: the whole screen for "Full", otherwise a box under the top buttons that glides between shapes
     val topInset = WindowInsets.safeDrawing.getTop(density)
     val reserve = with(density) { 64.dp.roundToPx() }
-    val targetTop = if (aspect == Aspect.FULL) 0 else topInset + reserve
-    val targetHeight = if (aspect == Aspect.FULL) viewSize.height else AspectMath.boxHeight(aspect, viewSize.width, (viewSize.height - targetTop).coerceAtLeast(1))
+    val shape = if (isVideo) Aspect.R16_9 else aspect // video is always the 16:9 shape, as in the stock app
+    val targetTop = if (shape == Aspect.FULL) 0 else topInset + reserve
+    val targetHeight = if (shape == Aspect.FULL) viewSize.height else AspectMath.boxHeight(shape, viewSize.width, (viewSize.height - targetTop).coerceAtLeast(1))
     val boxTop by animateIntAsState(targetTop, tween(MOTION_MS), label = "box top")
     val boxHeight by animateIntAsState(targetHeight, tween(MOTION_MS), label = "box height")
     LaunchedEffect(boxTop, boxHeight) {
@@ -166,13 +207,14 @@ fun CameraScreen(onSettings: () -> Unit) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
                 Lifecycle.Event.ON_RESUME -> { permitted = hasCamera(context); resumed = true; glView?.onResume() }
-                Lifecycle.Event.ON_PAUSE -> { resumed = false; showedPicture = false; runJob?.cancel(); engine.close(); texture = null; glView?.onPause() }
+                Lifecycle.Event.ON_PAUSE -> { leaveHooks[0](); resumed = false; showedPicture = false; runJob?.cancel(); engine.close(); texture = null; glView?.onPause() }
                 else -> Unit
             }
         }
         owner.lifecycle.addObserver(observer)
         onDispose {
             owner.lifecycle.removeObserver(observer)
+            leaveHooks[0]() // a recording in progress is finished and saved before the camera goes
             engine.close() // waits for a photo still on its way; the listener below must still be set until then
             engine.listener = null
             engine.release()
@@ -190,12 +232,45 @@ fun CameraScreen(onSettings: () -> Unit) {
     LaunchedEffect(heat) {
         if (heat != Heat.OK && runJob != null) { runJob?.cancel(); say("Stopped: the phone is hot") }
     }
-    LaunchedEffect(permitted, resumed, texture, facing, aspect) {
+    // video selection: what this camera and lens can do, and what the user picked (kept as it was while recording)
+    val front = facing == Facing.FRONT
+    val caps = remember(facing, engine) { engine.videoCapsFor(facing) }
+    val wantHevc = AppSettings.hevc
+    val mainLens = front || LensZone.isMain(zoom)
+    val options = remember(caps, front, mainLens, mode, wantHevc) {
+        val ok = { res: Res, fps: Int -> Encoders.codecFor(wantHevc, res, fps) != null }
+        when {
+            caps == null || !isVideo -> emptyList()
+            mode == Mode.SLOMO -> VideoQuality.sloMoOptions(caps, mainLens, ok)
+            mode == Mode.TIMELAPSE -> VideoQuality.timeLapseOptions(VideoQuality.options(caps, front, mainLens, ok))
+            else -> VideoQuality.options(caps, front, mainLens, ok)
+        }
+    }
+    val wanted = when (mode) {
+        Mode.SLOMO -> VideoOption(Res.entries[AppSettings.sloRes.coerceIn(0, 3)], AppSettings.sloFps)
+        Mode.TIMELAPSE -> VideoOption(Res.entries[AppSettings.videoRes.coerceIn(0, 3)], 30)
+        else -> VideoOption(Res.entries[AppSettings.videoRes.coerceIn(0, 3)], AppSettings.videoFps)
+    }
+    val picked: VideoOption? = if (recording) recOption else VideoQuality.resolve(wanted, options)
+    val hdrChoices = remember(caps) {
+        if (caps == null || !Encoders.hasTenBit()) emptyList()
+        else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
+    }
+    val hdrNow = if (mode == Mode.VIDEO && picked?.highSpeed != true) hdrChoices.firstOrNull { it.second == AppSettings.videoHdr }?.let { Hdr.entries[it.second - 1] } else null
+    val setup = if (isVideo && caps != null && picked != null) {
+        val hs = picked.highSpeed
+        CameraEngine.VideoSetup(
+            picked.res.width, picked.res.height, picked.fps, hs, hdrNow, VideoQuality.stabilisation(caps, AppSettings.ultraSteady, hs),
+            if (hs) picked.fps to picked.fps else VideoQuality.aeRange(caps, picked.fps, VideoQuality.adaptive(AppSettings.adaptiveFps, picked.fps)) ?: (picked.fps to picked.fps),
+        )
+    } else null
+    LaunchedEffect(caps, isVideo, picked == null) { if (isVideo && caps != null && picked == null) say("This camera cannot record video") }
+    LaunchedEffect(permitted, resumed, texture, facing, if (isVideo) null else aspect, setup) {
         val st = texture
         val view = glView
-        if (permitted && resumed && st != null && view != null && view.height > 0) {
+        if (permitted && resumed && st != null && view != null && view.height > 0 && (!isVideo || setup != null)) {
             // camera sizes are listed landscape, so the screen shape is its long side over its short side (about 2.2 on this phone)
-            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie))
+            engine.open(facing, st, AspectMath.captureAspect(aspect, view.height.toFloat() / view.width), CameraEngine.StillPrefs(AppSettings.heif, AppSettings.ultraHdr, AppSettings.mirrorSelfie), setup)
         }
     }
     LaunchedEffect(Unit) { snapshotFlow { zoom }.collect { engine.setZoom(it) } }
@@ -208,6 +283,7 @@ fun CameraScreen(onSettings: () -> Unit) {
             renderer.bufferHeight = it.previewHeight
             engine.setExposure(ev) // the camera was reopened: keep the exposure the user set
             engine.setFlash(flash)
+            focusHeld = false
         }
     }
     val state = engine.state
@@ -239,6 +315,11 @@ fun CameraScreen(onSettings: () -> Unit) {
 
             override fun onFailed(message: String) {
                 screenFlash = false
+                say(message)
+            }
+
+            override fun onVideoDowngraded(message: String) {
+                if (message.startsWith("10-bit")) AppSettings.videoHdr = 0 else AppSettings.ultraSteady = false
                 say(message)
             }
         }
@@ -283,16 +364,28 @@ fun CameraScreen(onSettings: () -> Unit) {
         zoom = if (facing == Facing.BACK) wide else 1f
     }
     fun cycleFlash() {
+        if (mode.isVideo) { // in video the flash is the torch
+            flash = if (flash == Flash.TORCH) Flash.OFF else Flash.TORCH
+            engine.setFlash(flash)
+            say("Torch: ${if (flash == Flash.TORCH) "On" else "Off"}")
+            return
+        }
         flash = flash.next(rear = facing == Facing.BACK)
         engine.setFlash(flash)
         say("Flash: ${flash.label}")
     }
+    /** Zoom limits: the camera's range, or while recording with "Lock lens" only the lens that was in use. */
+    fun clampZoom(z: Float): Float {
+        val lock = recLens
+        val i = engine.info
+        return if (recording && lock != null) z.coerceIn(lock.start, lock.endInclusive) else z.coerceIn(i?.zoomMin ?: 1f, i?.zoomMax ?: 1f)
+    }
     fun goTo(ratio: Float) {
         zoomJob?.cancel()
-        zoomJob = scope.launch { Animatable(zoom).animateTo(ratio.coerceIn(zoomMin, zoomMax), tween(MOTION_MS)) { zoom = value } }
+        zoomJob = scope.launch { Animatable(zoom).animateTo(clampZoom(ratio), tween(MOTION_MS)) { zoom = value } }
     }
     fun openLast() {
-        val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(AppSettings.lastPhotoUri), "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val view = Intent(Intent.ACTION_VIEW).setDataAndType(Uri.parse(AppSettings.lastPhotoUri), if (AppSettings.lastIsVideo) "video/*" else "image/*").addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         try {
             context.startActivity(Intent(view).setPackage(GALLERY))
         } catch (_: ActivityNotFoundException) {
@@ -315,8 +408,158 @@ fun CameraScreen(onSettings: () -> Unit) {
         return true
     }
 
+    fun stopRecording(note: String? = null) {
+        val r = recorder
+        if (!recording || r == null) return
+        recording = false
+        recPaused = false
+        recLens = null
+        savingVideo = true // the bar on the thumbnail moves until the file is complete
+        engine.setAwbLock(false)
+        if (AppSettings.shutterSound) sound.play(MediaActionSound.STOP_VIDEO_RECORDING)
+        r.stop(renderer)
+        note?.let(::say)
+    }
+    leaveHooks[0] = { stopRecording("Recording stopped. Your video is saved.") }
+
+    fun beginRecording() {
+        val i = engine.info ?: return
+        val s = setup ?: return
+        val o = recOption ?: picked ?: return
+        val style = mode.style ?: return
+        if (engine.state != CameraEngine.State.Streaming || recording || savingVideo) return
+        if (heat == Heat.TOO_HOT) return say("The phone is too hot. Let it cool down.")
+        if (!PhotoSaver.hasRoom(120L * 1024 * 1024)) return say("Storage is full")
+        val isFront = facing == Facing.FRONT
+        val turn = if (AppSettings.photoAutoRotate) VideoRules.turn(deviceDegrees, isFront) else 0
+        val (fw, fh) = VideoRules.frameSize(o.res, VideoRules.portrait(turn))
+        val hevc = s.hdr != null || Encoders.codecFor(AppSettings.hevc, o.res, o.fps) == true
+        val playFps = if (style == VideoStyle.NORMAL) o.fps else 30
+        val bitrate = VideoRules.bitrate(fw, fh, playFps, hevc, AppSettings.bitrateHigh, s.hdr != null, Encoders.maxBitrate(hevc))
+        val place = if (AppSettings.locationTags) LastLocation.get(context) else null
+        val cfg = VideoRecorder.Config(fw, fh, playFps, o.fps, hevc, s.hdr, bitrate, style == VideoStyle.NORMAL, style, AppSettings.lapseSpeed, i.cameraClockIsBoot, place)
+        val rec = VideoRecorder(context.applicationContext, cfg, object : VideoRecorder.Listener {
+            override fun onFinished(uri: Uri?, error: String?) {
+                savingVideo = false
+                recorder = null
+                if (uri != null) {
+                    AppSettings.rememberLast(uri.toString(), true)
+                    scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                    say(error ?: "Video saved")
+                } else if (error != null) {
+                    say(error)
+                }
+            }
+
+            override fun onProblem(message: String) { scope.launch { stopRecording("$message. Your video is saved.") } }
+        })
+        recorder = rec
+        recOption = o
+        recTurn = turn
+        recSize = fw to fh
+        recHdr = s.hdr != null
+        recMs = 0
+        savingVideo = true // creating the file and the encoders takes a moment
+        scope.launch {
+            val made = withContext(Dispatchers.IO) { rec.prepare() }
+            val surface = made.getOrNull()
+            if (surface == null) {
+                savingVideo = false
+                recorder = null
+                recOption = null
+                say(if (made.exceptionOrNull()?.message?.contains("microphone") == true) "The microphone could not start" else "The video could not start")
+                return@launch
+            }
+            val encoding = PreviewRenderer.Encoding(
+                surface, fw, fh, turn, isFront && AppSettings.mirrorSelfie, s.hdr != null, (o.fps / 60).coerceAtLeast(1), rec::gate,
+            )
+            renderer.startEncoding(encoding) { ok ->
+                if (ok) {
+                    rec.start()
+                    if (AppSettings.lockWb) engine.setAwbLock(true)
+                    recLens = if (AppSettings.lockLens && !isFront) LensZone.range(zoom, i.zoomMin, i.zoomMax) else null
+                    if (AppSettings.shutterSound) sound.play(MediaActionSound.START_VIDEO_RECORDING)
+                    savingVideo = false
+                    recording = true
+                } else {
+                    rec.cancel()
+                    savingVideo = false
+                    recorder = null
+                    recOption = null
+                    say("The video encoder could not start")
+                }
+            }
+        }
+    }
+    leaveHooks[1] = { beginRecording() }
+
+    /** Record button: asks for the microphone first when the video has sound, then starts or stops the recording. */
+    fun recordTap() {
+        menu = Menu.NONE
+        evOpen = false
+        qualityOpen = false
+        if (recording) return stopRecording()
+        if (savingVideo || engine.state != CameraEngine.State.Streaming) return
+        recOption = null
+        if (mode.style == VideoStyle.NORMAL && !hasMic(context)) { askMic.launch(Manifest.permission.RECORD_AUDIO); return }
+        recOption = picked
+        beginRecording()
+    }
+
+    fun togglePause() {
+        val r = recorder ?: return
+        if (!recording) return
+        if (recPaused) { r.resume(); recPaused = false } else { r.pause(); recPaused = true }
+    }
+
+    /** The photo button during a recording: one picture of the video frame, saved as a JPEG next to the video. */
+    fun snapshot() {
+        if (!recording || recHdr) return
+        shutterTick++
+        if (AppSettings.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        renderer.snapshot(recSize.first, recSize.second, recTurn, facing == Facing.FRONT && AppSettings.mirrorSelfie) { bitmap ->
+            if (bitmap == null) { say("Could not take the photo"); return@snapshot }
+            scope.launch(Dispatchers.IO) {
+                val bytes = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray()
+                bitmap.recycle()
+                withContext(Dispatchers.Main) {
+                    PhotoSaver.save(context, bytes, StillFormat.JPEG, null, false, System.currentTimeMillis()) { result ->
+                        result.onSuccess { uri ->
+                            if (!recording && !savingVideo) { AppSettings.rememberLastPhoto(uri.toString()); scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() } }
+                        }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
+                    }
+                }
+            }
+        }
+    }
+
+    fun selectMode(m: Mode) {
+        if (m == mode || recording || savingVideo) return
+        menu = Menu.NONE
+        evOpen = false
+        qualityOpen = false
+        focusPoint = null
+        focusHeld = false
+        renderer.freeze() // the picture stays on screen while the camera is set up for the other mode
+        if (m == Mode.SLOMO && facing == Facing.FRONT) { facing = Facing.BACK; zoom = wide }
+        if (m.isVideo && flash != Flash.TORCH) flash = Flash.OFF
+        mode = m
+        say(m.label)
+    }
+
+    LaunchedEffect(recording) {
+        while (recording) {
+            recMs = recorder?.activeMs() ?: 0
+            if (!PhotoSaver.hasRoom(40L * 1024 * 1024)) stopRecording("Storage is full. Your video is saved.")
+            delay(200)
+        }
+    }
+    LaunchedEffect(heat) { if (recording && heat == Heat.TOO_HOT) stopRecording("The phone is too hot. Your video is saved.") }
+    LaunchedEffect(state) { if (recording && state is CameraEngine.State.Error) stopRecording("The camera stopped. Your video is saved.") }
+
     /** Shutter tap: a timer run, an interval run or a single photo; a second tap while one is running stops it. */
     fun shutterTap() {
+        if (mode.isVideo) return recordTap()
         menu = Menu.NONE
         evOpen = false
         if (runJob != null) { runJob?.cancel(); say("Stopped"); return }
@@ -346,7 +589,7 @@ fun CameraScreen(onSettings: () -> Unit) {
         }
     }
     fun holdStart() {
-        if (!AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
+        if (mode.isVideo || !AppSettings.holdForBurst || runJob != null || timerSec > 0 || intervalSec > 0) return
         if (heat != Heat.OK) return say("No burst while the phone is hot")
         menu = Menu.NONE
         bursting = true
@@ -406,12 +649,13 @@ fun CameraScreen(onSettings: () -> Unit) {
             modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                 cameraGestures(
                     onTap = { pos ->
-                        if (menu != Menu.NONE || evOpen) { menu = Menu.NONE; evOpen = false }
-                        else if (AppSettings.tapToCapture) shutterTap()
+                        if (menu != Menu.NONE || evOpen || qualityOpen) { menu = Menu.NONE; evOpen = false; qualityOpen = false }
+                        else if (AppSettings.tapToCapture && !mode.isVideo) shutterTap()
                         else focus(pos, lock = false)
                     },
+                    onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d)?.let(::selectMode) },
                     onLongPress = { pos -> if (menu == Menu.NONE) focus(pos, lock = true) },
-                    onZoom = { change -> zoomJob?.cancel(); zoom = (zoom * change).coerceIn(zoomMin, zoomMax); pinching = true },
+                    onZoom = { change -> zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true },
                     onExposureDrag = { dy -> setEv(ev + dy / 150f) },
                     dragEnabled = { focusPoint != null },
                 )
@@ -430,13 +674,40 @@ fun CameraScreen(onSettings: () -> Unit) {
         if (permitted) {
             focusPoint?.let { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                TopPill(flash, ev, evOpen, ::cycleFlash, { evOpen = !evOpen; menu = Menu.NONE }, Modifier.align(Alignment.TopStart).padding(16.dp))
-                RoundButton(Modifier.align(Alignment.TopEnd).padding(16.dp), onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; evOpen = false }) {
-                    CbIcon(Icon.SIX_DOT, if (menu != Menu.NONE) DarkCb.mint else Color.White, size = 24.dp)
+                TopPill(flash, ev, evOpen, ::cycleFlash, { evOpen = !evOpen; menu = Menu.NONE; qualityOpen = false }, Modifier.align(Alignment.TopStart).padding(16.dp), showFlash = !(isVideo && front))
+                Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                    Visible(isVideo && picked != null && !recording && !savingVideo, enter = popEnter, exit = popExit) {
+                        QualityPill(
+                            if (mode == Mode.TIMELAPSE) TimeLapse.label(AppSettings.lapseSpeed) else picked?.label.orEmpty(), qualityOpen,
+                        ) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
+                    }
+                    RoundButton(onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; evOpen = false; qualityOpen = false }) {
+                        CbIcon(Icon.SIX_DOT, if (menu != Menu.NONE) DarkCb.mint else Color.White, size = 24.dp)
+                    }
                 }
                 Column(Modifier.align(Alignment.TopCenter).padding(top = 74.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Visible(recording, enter = popEnter, exit = popExit) {
+                        val extra = if (mode == Mode.TIMELAPSE) "CLIP " + VideoRules.timer((TimeLapse.clipSeconds(recMs / 1000, AppSettings.lapseSpeed) * 1000).toLong()) else null
+                        RecordTimer(recMs, recPaused, extra)
+                    }
                     Toast(toast)
-                    HeatChip(heat)
+                    HeatChip(heat, video = mode.isVideo)
+                }
+                Visible(qualityOpen && isVideo && !recording, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
+                    val rows = mutableListOf<ChipRow>()
+                    if (mode == Mode.TIMELAPSE) rows += ChipRow("SPEED", TimeLapse.SPEEDS.map { sp -> Chip(TimeLapse.label(sp), sp == AppSettings.lapseSpeed) { AppSettings.lapseSpeed = sp; qualityOpen = false } })
+                    rows += ChipRow(
+                        if (mode == Mode.TIMELAPSE) "QUALITY" else "RESOLUTION AND FRAME RATE",
+                        options.map { o ->
+                            Chip(if (mode == Mode.TIMELAPSE) o.res.label else o.label, o == picked) {
+                                if (o != picked) renderer.freeze()
+                                if (mode == Mode.SLOMO) { AppSettings.sloRes = o.res.ordinal; AppSettings.sloFps = o.fps }
+                                else { AppSettings.videoRes = o.res.ordinal; if (mode == Mode.VIDEO) AppSettings.videoFps = o.fps }
+                                qualityOpen = false
+                            }
+                        },
+                    )
+                    QualityPanel(rows)
                 }
                 Box(Modifier.align(Alignment.Center)) { Countdown(countdown) }
 
@@ -454,23 +725,47 @@ fun CameraScreen(onSettings: () -> Unit) {
                             }
                         }
                         Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
-                            Thumbnail(thumb, PhotoSaver.saving > 0, ::openLast)
+                            val normal = mode.style == VideoStyle.NORMAL
+                            Crossfade(recording && normal && !recHdr, animationSpec = tween(MOTION_FAST_MS), label = "left slot") { snap ->
+                                if (snap) RoundButton(size = 52, onClick = ::snapshot) { CbIcon(Icon.CAMERA, Color.White, size = 26.dp) }
+                                else Thumbnail(thumb, PhotoSaver.saving > 0 || savingVideo, ::openLast)
+                            }
                             Box(contentAlignment = Alignment.Center) {
-                                Shutter(
-                                    enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
-                                    onTap = ::shutterTap, onHoldStart = ::holdStart, onHoldEnd = ::holdEnd,
-                                )
+                                if (isVideo) {
+                                    RecordButton(recording, enabled = state == CameraEngine.State.Streaming && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
+                                } else {
+                                    Shutter(
+                                        enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
+                                        onTap = ::shutterTap, onHoldStart = ::holdStart, onHoldEnd = ::holdEnd,
+                                    )
+                                }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }
                             }
-                            RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
+                            Crossfade(if (recording) (if (normal) 1 else 2) else if (mode == Mode.SLOMO) 2 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
+                                when (slot) {
+                                    0 -> RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
+                                    1 -> RoundButton(size = 52, onClick = ::togglePause) { CbIcon(if (recPaused) Icon.PLAY else Icon.PAUSE, if (recPaused) DarkCb.mint else Color.White, size = 26.dp) }
+                                    else -> Spacer(Modifier.size(52.dp))
+                                }
+                            }
                         }
-                        Box(Modifier.padding(horizontal = 22.dp, vertical = 8.dp)) {
-                            Text("PHOTO", style = monoStyle(DarkCb.mint, 2.2.sp).copy(fontSize = 13.sp))
+                        Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
+                            ModeStrip(mode, enabled = !recording && !savingVideo, onSelect = ::selectMode)
                         }
                     }
                 }
                 Visible(menu != Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
-                    MenuPanel(
+                    if (isVideo) VideoMenuPanel(
+                        menu, showHdr = mode == Mode.VIDEO && hdrChoices.isNotEmpty() && picked?.highSpeed != true && !recording, hdr = AppSettings.videoHdr,
+                        showSteady = caps?.previewStabilisation == true && picked?.highSpeed != true && !recording, steady = AppSettings.ultraSteady, focusHeld = focusHeld,
+                        onPage = { menu = it },
+                        onHdr = { v -> renderer.freeze(); AppSettings.videoHdr = v; menu = Menu.NONE; say(if (v == 0) "10-bit HDR: Off" else "10-bit HDR: ${Hdr.entries[v - 1].label}") },
+                        onSteady = { renderer.freeze(); AppSettings.ultraSteady = !AppSettings.ultraSteady; menu = Menu.NONE; say("Ultra Steady: ${if (AppSettings.ultraSteady) "On" else "Off"}") },
+                        onFocus = { focusHeld = !focusHeld; engine.holdFocus(focusHeld); menu = Menu.NONE; say("Focus lock: ${if (focusHeld) "On" else "Off"}") },
+                        onSettings = { menu = Menu.NONE; onSettings() },
+                        hdrChoices = listOf("Off" to 0) + hdrChoices,
+                        modifier = Modifier.padding(bottom = 16.dp),
+                    ) else MenuPanel(
                         menu, aspect, timerSec, intervalSec,
                         onPage = { menu = it },
                         onAspect = { aspect = it; menu = Menu.NONE; say("Aspect ratio: ${it.label}") },
@@ -482,6 +777,13 @@ fun CameraScreen(onSettings: () -> Unit) {
                 }
             }
             ErrorOverlay(state, onRetry = engine::retry)
+            micAsk?.let { blocked ->
+                MicDialog(
+                    blocked, onAllow = { askMic.launch(Manifest.permission.RECORD_AUDIO) },
+                    onSettings = { micAsk = null; context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) },
+                    onCancel = { micAsk = null },
+                )
+            }
         } else {
             PermissionScreen(refused, context) { askCamera.launch(Manifest.permission.CAMERA) }
         }

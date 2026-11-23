@@ -70,7 +70,7 @@ import kotlin.math.ln
 import kotlin.math.roundToInt
 
 /** Which page of the 6-dot menu is open. */
-internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL }
+internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR }
 
 private val Glass = Color.Black.copy(alpha = 0.42f)
 
@@ -84,6 +84,7 @@ internal suspend fun PointerInputScope.cameraGestures(
     onZoom: (Float) -> Unit,
     onExposureDrag: (Float) -> Unit, // pixels, positive = up
     dragEnabled: () -> Boolean,
+    onSwipe: (Int) -> Unit = {}, // -1 left, 1 right: a sideways swipe of a finger that is not setting the exposure
 ) = awaitEachGesture {
     val down = awaitFirstDown(requireUnconsumed = false)
     val slop = viewConfiguration.touchSlop
@@ -107,27 +108,34 @@ internal suspend fun PointerInputScope.cameraGestures(
         return@awaitEachGesture
     }
     if (outcome == 1) return@awaitEachGesture onTap(down.position)
+    var twoFingers = false
+    var last = down.position
     do {
         val event = awaitPointerEvent()
         if (event.changes.size > 1) {
+            twoFingers = true
             val zoom = event.calculateZoom()
             if (zoom != 1f) { onZoom(zoom); event.changes.forEach { it.consume() } }
         } else if (dragEnabled()) {
             val dy = event.changes[0].positionChange().y
             if (dy != 0f) { onExposureDrag(-dy); event.changes[0].consume() }
         }
+        last = event.changes[0].position
     } while (event.changes.any { it.pressed })
+    val dx = last.x - down.position.x
+    val dy = last.y - down.position.y
+    if (!twoFingers && !dragEnabled() && kotlin.math.abs(dx) > 140f && kotlin.math.abs(dx) > 2.5f * kotlin.math.abs(dy)) onSwipe(if (dx < 0) 1 else -1)
 }
 
 /** Top left: flash and the exposure reading (tap it for the dial). */
 @Composable
-internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Unit, onEv: () -> Unit, modifier: Modifier = Modifier) {
+internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Unit, onEv: () -> Unit, modifier: Modifier = Modifier, showFlash: Boolean = true) {
     Row(modifier.height(44.dp).clip(CircleShape).background(Glass), verticalAlignment = Alignment.CenterVertically) {
-        Box(Modifier.size(44.dp).clickable(onClick = onFlash), Alignment.Center) {
+        if (showFlash) Box(Modifier.size(44.dp).clickable(onClick = onFlash), Alignment.Center) {
             CbIcon(if (flash == Flash.OFF) Icon.FLASH_OFF else Icon.FLASH, glide(flash == Flash.TORCH, DarkCb.mint, Color.White), filled = flash == Flash.ON || flash == Flash.TORCH, size = 22.dp)
             if (flash == Flash.AUTO) Text("A", Modifier.align(Alignment.BottomEnd).padding(end = 7.dp, bottom = 5.dp), style = monoStyle(Color.White, 0.sp).copy(fontSize = 10.sp))
         }
-        Row(Modifier.clickable(onClick = onEv).padding(start = 6.dp, end = 16.dp).height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.clickable(onClick = onEv).padding(start = if (showFlash) 6.dp else 16.dp, end = 16.dp).height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("EV", style = monoStyle(DarkCb.inkDim, 1.sp).copy(fontSize = 12.sp))
             Text(Ev.label(ev), style = monoStyle(glide(evOpen || ev != 0f, DarkCb.mint, Color.White), 0.5.sp).copy(fontSize = 15.sp))
         }
@@ -230,6 +238,7 @@ internal fun MenuPanel(
                 Menu.INTERVAL -> MenuPage("INTERVAL SHOOTING", { onPage(Menu.MAIN) }) {
                     listOf(0, 3, 5, 10).forEach { Choice(if (it == 0) "Off" else "$it s", it == intervalSec) { onInterval(it) } }
                 }
+                Menu.HDR -> Unit // the video menu's page, see VideoMenuPanel
             }
         }
     }
@@ -357,11 +366,11 @@ internal fun Toast(message: Pair<String, Int>?) {
 
 /** An amber warning while the phone is hot; it stays until the phone has cooled down. */
 @Composable
-internal fun HeatChip(heat: com.claudeborne.camera.camera.Heat) {
+internal fun HeatChip(heat: com.claudeborne.camera.camera.Heat, video: Boolean = false) {
     var last by remember { mutableStateOf(heat) }
     if (heat != com.claudeborne.camera.camera.Heat.OK) last = heat
     Visible(heat != com.claudeborne.camera.camera.Heat.OK, enter = popEnter, exit = popExit) {
-        val text = if (last == com.claudeborne.camera.camera.Heat.TOO_HOT) "TOO HOT · LET IT COOL DOWN" else "PHONE IS HOT · NO BURSTS"
+        val text = if (last == com.claudeborne.camera.camera.Heat.TOO_HOT) "TOO HOT · LET IT COOL DOWN" else if (video) "PHONE IS HOT" else "PHONE IS HOT · NO BURSTS"
         Text(text, Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.6f)).border(1.dp, Warn, CircleShape).padding(horizontal = 16.dp, vertical = 8.dp), style = monoStyle(Warn, 1.2.sp).copy(fontSize = 11.sp))
     }
 }

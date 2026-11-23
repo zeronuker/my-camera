@@ -30,12 +30,14 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.claudeborne.camera.camera.ZoomStops
+import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
+private val ADAPTIVE = listOf("Off", "For 30 fps videos", "For 30 fps and 60 fps videos")
 
 /**
  * Settings as in the stock app: General / Photo / Video tabs of grouped cards, with sub-pages for the choices. Only rows for features
@@ -63,7 +65,7 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                         when (t) {
                             0 -> GeneralTab({ page = it }, onAbout)
                             1 -> PhotoTab { page = it }
-                            else -> Group(footer = "Video recording, quality and stabilisation settings arrive with video in a later update.") { }
+                            else -> VideoTab { page = it }
                         }
                     }
                 }
@@ -76,6 +78,9 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                 Group(footer = "Smaller files at the same quality (HEIF). When on, it is used instead of Ultra HDR. Some apps cannot open HEIF photos.") {
                     row { SwitchRow("High efficiency image", AppSettings.heif, { AppSettings.heif = it }) }
                 }
+                if (Encoders.hasHevc()) Group(
+                    "Video", "Smaller video files at the same quality (HEVC). Turn it off if another app cannot play your videos. 10-bit HDR video always uses HEVC.",
+                ) { row { SwitchRow("High efficiency video", AppSettings.hevc, { AppSettings.hevc = it }) } }
             }
             SettingsPage.HOLD -> Page("TOUCH AND HOLD SHUTTER", up) {
                 Group(footer = "Keep the shutter pressed to take photos one after another until you let go. Clear burst (sharper frames) comes later.") {
@@ -102,6 +107,17 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
             SettingsPage.VOLUME -> Page("VOLUME BUTTON ACTION", up) {
                 Group {
                     VOLUME_ACTIONS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.volumeAction == i, { AppSettings.volumeAction = i }) } }
+                }
+            }
+            SettingsPage.ADAPTIVE -> Page("ADAPTIVE FRAME RATE", up) {
+                Group(footer = "In dim light the camera may slow down to get brighter pictures. The video file keeps the right speed.") {
+                    ADAPTIVE.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.adaptiveFps == i, { AppSettings.adaptiveFps = i }) } }
+                }
+            }
+            SettingsPage.BITRATE -> Page("BITRATE", up) {
+                Group(footer = "High quality uses more storage for a sharper picture: about 30 megabits a second for 4K at 30 fps with HEVC, 19 for Standard.") {
+                    row { RadioRow("Standard", !AppSettings.bitrateHigh, { AppSettings.bitrateHigh = false }) }
+                    row { RadioRow("High quality", AppSettings.bitrateHigh, { AppSettings.bitrateHigh = true }) }
                 }
             }
             SettingsPage.ORIENTATION -> Page("PHOTO ORIENTATION", up) {
@@ -151,6 +167,16 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         row { NavRow("Photo orientation", ORIENTATIONS[if (AppSettings.photoAutoRotate) 1 else 0]) { open(SettingsPage.ORIENTATION) } }
     }
     Group { row { NavRow("About Camera", onClick = onAbout) } }
+}
+
+@Composable
+private fun VideoTab(open: (SettingsPage) -> Unit) {
+    Group(footer = "Videos are recorded with the sound of the microphone (not in slo-mo and time-lapse) and saved in DCIM/Camera.") {
+        row { SwitchRow("Lock lens", AppSettings.lockLens, { AppSettings.lockLens = it }, "Do not automatically change lenses while recording videos.") }
+        row { SwitchRow("Lock white balance", AppSettings.lockWb, { AppSettings.lockWb = it }, "Do not automatically adjust white balance while recording videos.") }
+        row { NavRow("Adaptive frame rate", ADAPTIVE[AppSettings.adaptiveFps.coerceIn(0, 2)]) { open(SettingsPage.ADAPTIVE) } }
+        row { NavRow("Bitrate", if (AppSettings.bitrateHigh) "High quality" else "Standard") { open(SettingsPage.BITRATE) } }
+    }
 }
 
 @Composable

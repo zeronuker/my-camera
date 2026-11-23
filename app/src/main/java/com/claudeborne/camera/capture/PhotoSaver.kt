@@ -33,8 +33,8 @@ object PhotoSaver {
     /** Below this much free space the shutter refuses and says so instead of failing half way. */
     private const val MIN_FREE_BYTES = 60L * 1024 * 1024
 
-    fun hasRoom(): Boolean = try {
-        StatFs(Environment.getExternalStorageDirectory().path).availableBytes >= MIN_FREE_BYTES
+    fun hasRoom(minBytes: Long = MIN_FREE_BYTES): Boolean = try {
+        StatFs(Environment.getExternalStorageDirectory().path).availableBytes >= minBytes
     } catch (_: Exception) {
         true // cannot tell: try; a failed write is reported on its own
     }

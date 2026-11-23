@@ -5,6 +5,7 @@ import android.graphics.ImageFormat
 import android.graphics.SurfaceTexture
 import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CameraConstrainedHighSpeedCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
 import android.hardware.camera2.CameraManager
@@ -13,6 +14,9 @@ import android.hardware.camera2.CaptureRequest
 import android.hardware.camera2.CaptureResult
 import android.hardware.camera2.TotalCaptureResult
 import android.hardware.camera2.params.OutputConfiguration
+import android.util.Range
+import com.claudeborne.camera.video.Hdr
+import com.claudeborne.camera.video.VideoCaps
 import android.hardware.camera2.params.SessionConfiguration
 import android.location.Location
 import android.media.ImageReader
@@ -54,6 +58,14 @@ class CameraEngine(context: Context) {
         val facing: Facing, val sensorOrientation: Int, val previewWidth: Int, val previewHeight: Int,
         val zoomMin: Float, val zoomMax: Float, val hasFlash: Boolean, val format: StillFormat,
         val activeWidth: Int, val activeHeight: Int, val evStep: Float, val evMinIndex: Int, val evMaxIndex: Int,
+        val video: VideoCaps, val cameraClockIsBoot: Boolean, val hasAwbLock: Boolean,
+    )
+
+    /** A video session: the stream size, frame rate and the choices that change how the session itself is built. */
+    data class VideoSetup(
+        val width: Int, val height: Int, val fps: Int, val highSpeed: Boolean, val hdr: Hdr?,
+        /** `CONTROL_VIDEO_STABILIZATION_MODE`: 0 off, 1 on, 2 preview stabilisation (Ultra Steady). */
+        val stabilisation: Int, val aeRange: Pair<Int, Int>,
     )
 
     /** What the focus is doing right now, for the colour of the focus box. */
@@ -72,6 +84,9 @@ class CameraEngine(context: Context) {
         fun onShutter()
         fun onPhoto(photo: Photo)
         fun onFailed(message: String)
+
+        /** A video choice the camera refused (10-bit HDR, Ultra Steady) was switched off so the viewfinder could start. */
+        fun onVideoDowngraded(message: String) {}
     }
 
     var state: State by mutableStateOf(State.Idle)
@@ -104,6 +119,9 @@ class CameraEngine(context: Context) {
     private var wantTexture: SurfaceTexture? = null
     private var wantAspect = 2.2f
     private var wantPrefs = StillPrefs(heif = false, ultraHdr = true, mirrorSelfie = true)
+    private var wantVideo: VideoSetup? = null
+    @Volatile private var awbLock = false
+    private var highSpeedSession = false
     private var cameraId: String? = null
     private var retries = 0
     private var hasFlash = false
@@ -126,8 +144,9 @@ class CameraEngine(context: Context) {
     private var shotToken = 0
 
     /** Opens the camera for [facing] and streams into [texture]; closes whatever was open before. Returns at once. */
-    fun open(facing: Facing, texture: SurfaceTexture, screenAspect: Float, prefs: StillPrefs) {
+    fun open(facing: Facing, texture: SurfaceTexture, screenAspect: Float, prefs: StillPrefs, video: VideoSetup? = null) {
         handler.post {
+            wantVideo = video
             wantFacing = facing
             wantTexture = texture
             wantAspect = screenAspect
@@ -194,6 +213,22 @@ class CameraEngine(context: Context) {
         }
     }
 
+    /** Video "Focus lock": keeps the focus and exposure where they are now (no focus point), until [clearFocus]. */
+    fun holdFocus(on: Boolean) {
+        handler.post {
+            focusRect = null
+            locked = on
+            focusToken++
+            applyRequest()
+        }
+    }
+
+    /** Video "Lock white balance": the colour balance stays as it is while on. */
+    fun setAwbLock(on: Boolean) {
+        awbLock = on
+        handler.post { applyRequest() }
+    }
+
     /** Back to following the scene by itself. */
     fun clearFocus() {
         handler.post {
@@ -245,7 +280,8 @@ class CameraEngine(context: Context) {
         b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoom.coerceIn(i.zoomMin, i.zoomMax))
         b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, Ev.toIndex(evStops, i.evStep, i.evMinIndex, i.evMaxIndex))
         b.set(CaptureRequest.CONTROL_AE_LOCK, locked)
-        b.set(CaptureRequest.CONTROL_AF_MODE, if (locked) CaptureRequest.CONTROL_AF_MODE_AUTO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+        val follow = if (wantVideo != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE
+        b.set(CaptureRequest.CONTROL_AF_MODE, if (locked) CaptureRequest.CONTROL_AF_MODE_AUTO else follow)
         val rect = focusRect?.let { arrayOf(it) }
         if (afRegions) b.set(CaptureRequest.CONTROL_AF_REGIONS, rect)
         if (aeRegions) b.set(CaptureRequest.CONTROL_AE_REGIONS, rect)
@@ -260,17 +296,26 @@ class CameraEngine(context: Context) {
             val chars = manager.getCameraCharacteristics(id)
             val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)!!
             val sizes = map.getOutputSizes(SurfaceTexture::class.java).map { it.width to it.height }
-            val (w, h) = choosePreviewSize(sizes) ?: return fail(Kind.FAILED, "no preview size")
+            val caps = videoCaps(chars, map, sizes)
+            val video = wantVideo
+            val (w, h) = (if (video != null) {
+                val wanted = video.width to video.height
+                if (video.highSpeed) wanted.takeIf { it in caps.highSpeed } else wanted.takeIf { it in caps.sizes }
+            } else {
+                choosePreviewSize(sizes)
+            }) ?: return fail(Kind.FAILED, if (video != null) "this camera cannot record that video size" else "no preview size")
             val zoomRange = chars.get(CameraCharacteristics.CONTROL_ZOOM_RATIO_RANGE)
             hasFlash = chars.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
             qualityNoise = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES)?.contains(CaptureRequest.NOISE_REDUCTION_MODE_HIGH_QUALITY) == true
             qualityEdge = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES)?.contains(CaptureRequest.EDGE_MODE_HIGH_QUALITY) == true
 
             fun stillSizes(f: StillFormat) = if (map.isOutputSupportedFor(imageFormat(f))) map.getOutputSizes(imageFormat(f)).orEmpty().map { it.width to it.height } else emptyList()
-            val supported = StillFormat.entries.filter { stillSizes(it).isNotEmpty() }.toSet()
-            format = PhotoRules.chooseFormat(wantFacing == Facing.FRONT, wantPrefs.mirrorSelfie, wantPrefs.heif, wantPrefs.ultraHdr, supported)
-            val (sw, sh) = PhotoRules.chooseStillSize(stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
-            reader = ImageReader.newInstance(sw, sh, imageFormat(format), 2).also { it.setOnImageAvailableListener(::onImage, handler) }
+            if (video == null) { // video sessions have no still stream: a photo while recording is taken from the GL frame
+                val supported = StillFormat.entries.filter { stillSizes(it).isNotEmpty() }.toSet()
+                format = PhotoRules.chooseFormat(wantFacing == Facing.FRONT, wantPrefs.mirrorSelfie, wantPrefs.heif, wantPrefs.ultraHdr, supported)
+                val (sw, sh) = PhotoRules.chooseStillSize(stillSizes(format), wantAspect) ?: return fail(Kind.FAILED, "no photo size")
+                reader = ImageReader.newInstance(sw, sh, imageFormat(format), 2).also { it.setOnImageAvailableListener(::onImage, handler) }
+            }
 
             afRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0) > 0
             aeRegions = (chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AE) ?: 0) > 0
@@ -282,6 +327,8 @@ class CameraEngine(context: Context) {
             info = Info(
                 wantFacing, chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, w, h, zoomRange?.lower ?: 1f, zoomRange?.upper ?: 1f, hasFlash, format,
                 active.width(), active.height(), chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_STEP)?.toFloat() ?: 0f, evRange?.lower ?: 0, evRange?.upper ?: 0,
+                caps, chars.get(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE) == CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME,
+                chars.get(CameraCharacteristics.CONTROL_AWB_LOCK_AVAILABLE) == true,
             )
             texture.setDefaultBufferSize(w, h)
             surface = Surface(texture)
@@ -326,18 +373,25 @@ class CameraEngine(context: Context) {
 
     private fun configure(camera: CameraDevice, mine: Int) {
         val preview = surface ?: return
-        val still = reader?.surface ?: return
+        val video = wantVideo
+        val still = if (video == null) reader?.surface ?: return else null
         try {
+            val outputs = if (video != null) {
+                listOf(OutputConfiguration(preview).apply { video.hdr?.let { dynamicRangeProfile = it.camera } })
+            } else {
+                listOf(OutputConfiguration(preview), OutputConfiguration(still!!))
+            }
+            highSpeedSession = video?.highSpeed == true
             camera.createCaptureSession(
                 SessionConfiguration(
-                    SessionConfiguration.SESSION_REGULAR, listOf(OutputConfiguration(preview), OutputConfiguration(still)), executor,
+                    if (highSpeedSession) SessionConfiguration.SESSION_HIGH_SPEED else SessionConfiguration.SESSION_REGULAR, outputs, executor,
                     object : CameraCaptureSession.StateCallback() {
                         override fun onConfigured(s: CameraCaptureSession) {
                             if (mine != generation) return s.close()
                             session = s
-                            request = camera.createCaptureRequest(CameraDevice.TEMPLATE_PREVIEW).apply {
+                            request = camera.createCaptureRequest(if (video != null) CameraDevice.TEMPLATE_RECORD else CameraDevice.TEMPLATE_PREVIEW).apply {
                                 addTarget(preview)
-                                set(CaptureRequest.CONTROL_AF_MODE, CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
+                                set(CaptureRequest.CONTROL_AF_MODE, if (video != null) CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_VIDEO else CaptureRequest.CONTROL_AF_MODE_CONTINUOUS_PICTURE)
                             }
                             retries = 0
                             applyRequest()
@@ -345,7 +399,16 @@ class CameraEngine(context: Context) {
                         }
 
                         override fun onConfigureFailed(s: CameraCaptureSession) {
-                            if (mine == generation) fail(Kind.FAILED, "could not start the preview")
+                            if (mine != generation) return
+                            // a refused 10-bit or Ultra Steady choice is dropped once, so the viewfinder still comes up
+                            if (video != null && (video.hdr != null || video.stabilisation == 2)) {
+                                val what = if (video.hdr != null) "10-bit HDR is not available at this quality" else "Ultra Steady is not available at this quality"
+                                wantVideo = video.copy(hdr = null, stabilisation = if (video.stabilisation == 2) 1 else video.stabilisation)
+                                listener?.onVideoDowngraded(what)
+                                start()
+                            } else {
+                                fail(Kind.FAILED, "could not start the preview")
+                            }
                         }
                     },
                 ),
@@ -361,8 +424,14 @@ class CameraEngine(context: Context) {
         common(r)
         r.set(CaptureRequest.CONTROL_AE_MODE, aeMode(flash))
         r.set(CaptureRequest.FLASH_MODE, if (flash == Flash.TORCH && hasFlash) CaptureRequest.FLASH_MODE_TORCH else CaptureRequest.FLASH_MODE_OFF)
+        wantVideo?.let {
+            r.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(it.aeRange.first, it.aeRange.second))
+            if (!it.highSpeed) r.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, it.stabilisation)
+            if (info?.hasAwbLock == true) r.set(CaptureRequest.CONTROL_AWB_LOCK, awbLock)
+        }
         try {
-            s.setRepeatingRequest(r.build(), previewCallback, handler)
+            if (s is CameraConstrainedHighSpeedCaptureSession) s.setRepeatingBurst(s.createHighSpeedRequestList(r.build()), previewCallback, handler)
+            else s.setRepeatingRequest(r.build(), previewCallback, handler)
         } catch (_: Exception) {
             // the session is closing; the next open() starts fresh
         }
@@ -524,10 +593,38 @@ class CameraEngine(context: Context) {
         try { surface?.release() } catch (_: Exception) { }
         try { reader?.close() } catch (_: Exception) { }
         session = null
+        highSpeedSession = false
         device = null
         request = null
         surface = null
         reader = null
+    }
+
+    private val capsCache = HashMap<Facing, VideoCaps>()
+
+    /** What the camera of [facing] can do for video; asked from the system once, so the quality picker can be built before the camera opens. */
+    fun videoCapsFor(facing: Facing): VideoCaps? = synchronized(capsCache) {
+        capsCache[facing] ?: try {
+            val chars = manager.getCameraCharacteristics(pickCamera(facing) ?: return null)
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+            videoCaps(chars, map, map.getOutputSizes(SurfaceTexture::class.java).map { it.width to it.height }).also { capsCache[facing] = it }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** What this camera can do for video, from its characteristics (read on the camera thread when the camera opens). */
+    private fun videoCaps(chars: CameraCharacteristics, map: android.hardware.camera2.params.StreamConfigurationMap, sizes: List<Pair<Int, Int>>): VideoCaps {
+        val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES).orEmpty().map { it.lower to it.upper }
+        val fast = HashMap<Pair<Int, Int>, Set<Int>>()
+        for (size in map.highSpeedVideoSizes.orEmpty()) {
+            // a fixed range (120..120) is what a high-speed request uses
+            fast[size.width to size.height] = map.getHighSpeedVideoFpsRangesFor(size).filter { it.lower == it.upper }.map { it.upper }.toSet()
+        }
+        val stab = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)?.toSet().orEmpty()
+        val tenBit = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)?.supportedProfiles
+            ?.filter { it == Hdr.HLG10.camera || it == Hdr.HDR10.camera }?.toSet().orEmpty()
+        return VideoCaps(sizes.toSet(), ranges, fast, stab, tenBit)
     }
 
     private fun pickCamera(facing: Facing): String? {

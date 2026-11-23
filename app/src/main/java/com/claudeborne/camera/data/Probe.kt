@@ -109,6 +109,12 @@ object Probe {
             }
             a
         }
+        // Dolby Vision is only reported, never offered (PLAN.md Phase 2): is there an encoder for video/dolby-vision at all?
+        guard(root, "dolbyVisionEncoders") {
+            val names = com.claudeborne.camera.video.Encoders.dolbyVisionEncoders()
+            lines += "DOLBY VISION ENCODERS ${if (names.isEmpty()) "none" else names.joinToString()}"
+            JSONArray(names)
+        }
 
         progress("APPS")
         guard(root, "intentHandlers") {

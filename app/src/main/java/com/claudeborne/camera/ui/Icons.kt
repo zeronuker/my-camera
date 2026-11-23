@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN }
+enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK }
 
 /** Line icons drawn on a 24 x 24 grid, so the app needs no icon library and they match the brand's thin outlines. */
 @Composable
@@ -236,6 +236,29 @@ fun CbIcon(icon: Icon, color: Color, modifier: Modifier = Modifier, filled: Bool
                     seg(16.5f, 9f, 21.5f, 15f)
                     seg(21.5f, 9f, 16.5f, 15f)
                 }
+            }
+            Icon.CAMERA, Icon.STEADY -> {
+                round(3.5f, 7.5f, 17f, 12f, 2.5f)
+                seg(8f, 7.5f, 9.5f, 4.5f)
+                seg(9.5f, 4.5f, 14.5f, 4.5f)
+                seg(14.5f, 4.5f, 16f, 7.5f)
+                drawCircle(color, 3.2f * k, p(12f, 13.5f), style = line)
+                if (icon == Icon.STEADY) { // small wobble marks on both sides
+                    seg(1.2f, 11f, 1.2f, 16f)
+                    seg(22.8f, 11f, 22.8f, 16f)
+                }
+            }
+            Icon.PAUSE -> {
+                drawRoundRect(color, p(6f, 5f), Size(4f * k, 14f * k), CornerRadius(1f * k))
+                drawRoundRect(color, p(14f, 5f), Size(4f * k, 14f * k), CornerRadius(1f * k))
+            }
+            Icon.PLAY -> shape(Path().apply { moveTo(7f * k, 4.5f * k); lineTo(19.5f * k, 12f * k); lineTo(7f * k, 19.5f * k); close() }, true)
+            Icon.FOCUS_LOCK -> {
+                for ((x, y, dx, dy) in listOf(listOf(4f, 4f, 1f, 1f), listOf(20f, 4f, -1f, 1f), listOf(4f, 20f, 1f, -1f), listOf(20f, 20f, -1f, -1f))) {
+                    seg(x, y, x + dx * 5f, y)
+                    seg(x, y, x, y + dy * 5f)
+                }
+                drawCircle(color, 1.8f * k, p(12f, 12f))
             }
             Icon.CHECK -> shape(Path().apply { moveTo(5f * k, 12.5f * k); lineTo(10f * k, 17.5f * k); lineTo(19f * k, 7f * k) })
         }
