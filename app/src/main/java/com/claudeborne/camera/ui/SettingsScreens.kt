@@ -232,6 +232,9 @@ private fun PhotoTab(open: (SettingsPage) -> Unit) {
         row { NavRow("Lens focal length") { open(SettingsPage.LENS) } }
         row { NavRow("Text and QR code scanning", if (AppSettings.qrScan || AppSettings.recommendText) "On" else "Off") { open(SettingsPage.SCANNING) } }
     }
+    Group(footer = "Beyond 10x zoom, a second picture is saved after the normal one, redrawn by an AI model (Real-ESRGAN) for finer detail. It takes about a minute; a bar shows the progress. Keep the app open until it is done.") {
+        row { SwitchRow("AI Telescope Zoom", AppSettings.aiZoom, { AppSettings.aiZoom = it }) }
+    }
     Group(footer = "Switches to the ultra wide lens (it focuses from 3.5 cm) when the subject is too close for the main lens.") {
         row { SwitchRow("Auto macro", AppSettings.autoMacro, { AppSettings.autoMacro = it }) }
     }

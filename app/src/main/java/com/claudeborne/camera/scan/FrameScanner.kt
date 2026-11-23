@@ -15,7 +15,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** What one look at a live frame found: a QR code's text, and the lines of text with how many characters they hold. */
-class FrameHit(val qr: String?, val lines: List<Frac>, val chars: Int, val quad: Quad? = null, val palm: Boolean = false)
+class FrameHit(val qr: String?, val lines: List<Frac>, val chars: Int, val quad: Quad? = null, val palm: Boolean = false, val cover: Float = 0f)
 
 /**
  * QR and text finding with ML Kit (bundled models). Frames come from the GL pipeline as small RGBA copies; one is looked at
@@ -30,7 +30,7 @@ class FrameScanner(context: android.content.Context) {
     private val chinese by lazy { TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build()) }
 
     /** [rgba] is a GL read-back (bottom row first). [done] runs on the scanner thread. Returns false when the last frame is still being looked at. */
-    fun look(rgba: ByteArray, w: Int, h: Int, wantQr: Boolean, wantText: Boolean, wantDoc: Boolean = false, wantPalm: Boolean = false, done: (FrameHit) -> Unit): Boolean {
+    fun look(rgba: ByteArray, w: Int, h: Int, wantQr: Boolean, wantText: Boolean, wantDoc: Boolean = false, wantPalm: Boolean = false, wantCover: Boolean = false, done: (FrameHit) -> Unit): Boolean {
         if (!busy.compareAndSet(false, true)) return false
         worker.execute {
             try {
@@ -39,6 +39,12 @@ class FrameScanner(context: android.content.Context) {
                     val quad = runCatching { DocScanner.findQuad(bitmap) }.getOrNull()
                     bitmap.recycle()
                     done(FrameHit(null, emptyList(), 0, quad))
+                    return@execute
+                }
+                if (wantCover) { // portrait: how much of the frame is a person
+                    val cover = runCatching { com.claudeborne.camera.proc.Portrait.cover(bitmap) }.getOrDefault(0f)
+                    bitmap.recycle()
+                    done(FrameHit(null, emptyList(), 0, null, false, cover))
                     return@execute
                 }
                 val palm = wantPalm && hands.seesOpenPalm(bitmap)

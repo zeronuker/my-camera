@@ -105,6 +105,10 @@ import com.claudeborne.camera.scan.Enhance
 import com.claudeborne.camera.scan.Quad
 import com.claudeborne.camera.scan.ScanSaver
 import com.claudeborne.camera.scan.Frac
+import com.claudeborne.camera.proc.AI_INPUT_MAX
+import com.claudeborne.camera.proc.Portrait
+import com.claudeborne.camera.proc.PortraitRules
+import com.claudeborne.camera.proc.upscale4x
 import com.claudeborne.camera.video.ClipRing
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.async
@@ -214,6 +218,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
     var ring by remember { mutableStateOf<ClipRing?>(null) } // Live photo: the clip encoder that runs while it is on
     var liveClip by remember { mutableStateOf<Deferred<ByteArray?>?>(null) } // the clip for the photo being taken
+    var tooClose by remember { mutableStateOf(false) } // Portrait: the person fills too much of the frame
+    var aiProgress by remember { mutableStateOf<Float?>(null) } // AI Telescope Zoom: progress of the enhancement running now
+    val skipPortrait = remember { booleanArrayOf(false) }
     var busyText by remember { mutableStateOf("READING TEXT") }
     var finishFlag by remember { mutableStateOf(false) } // second tap in Pano / Long exposure: stop taking pictures and finish
     var sweepProgress by remember { mutableStateOf<Float?>(null) }
@@ -350,7 +357,14 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val rearCaps = remember(engine) { engine.videoCapsFor(Facing.BACK) }
     val hasGyro = remember { (context.getSystemService(Context.SENSOR_SERVICE) as android.hardware.SensorManager).getDefaultSensor(android.hardware.Sensor.TYPE_GYROSCOPE) != null }
     val nightOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_NIGHT) && !engine.extRefused
-    val extWanted = if (nightOk && !isVideo && !wantRaw && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways))) CameraExtensionCharacteristics.EXTENSION_NIGHT else -1
+    val bokehOk = engine.extensionSupported(facing, CameraExtensionCharacteristics.EXTENSION_BOKEH) && !engine.extRefused
+    val extWanted = when {
+        isVideo || wantRaw -> -1
+        nightOk && (mode == Mode.NIGHT || (mode == Mode.PHOTO && AppSettings.nightAlways)) -> CameraExtensionCharacteristics.EXTENSION_NIGHT
+        bokehOk && mode == Mode.PORTRAIT -> CameraExtensionCharacteristics.EXTENSION_BOKEH // the phone's own portrait blur (rear camera)
+        else -> -1
+    }
+    val portraitOwnNow by rememberUpdatedState(mode == Mode.PORTRAIT && extWanted < 0) // our own cut-out and blur: front camera, or no BOKEH
     LaunchedEffect(nightOk) { if (!nightOk && mode == Mode.NIGHT) mode = Mode.PHOTO }
     // Live photo: while on (Photo, rear camera), the GL pipeline feeds a small encoder that remembers the last moments
     val liveOn = mode == Mode.PHOTO && AppSettings.livePhoto && facing == Facing.BACK && extWanted < 0 && !launch.returnsResult
@@ -381,7 +395,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val lookFilterOk = !isMaster && !mode.oneShot && mode != Mode.SLOMO && !(isVideo && picked?.highSpeed == true)
     val look = if (isVideo && picked?.highSpeed == true) Look.NONE else Look(
         filter = if (lookFilterOk) AppSettings.filter.coerceIn(0, com.claudeborne.camera.look.Filters.all.lastIndex) else 0,
-        soft = if (mode == Mode.PHOTO || isMaster) AppSettings.softLight else 0,
+        soft = if (mode == Mode.PHOTO || mode == Mode.PORTRAIT || isMaster) AppSettings.softLight else 0,
         tone = if (isMaster) AppSettings.styleTone else 0, sat = if (isMaster) AppSettings.styleSat else 0, warm = if (isMaster) AppSettings.styleWarm else 0,
         tint = if (isMaster) AppSettings.styleTint else 0, sharp = if (isMaster) AppSettings.styleSharp else 0, vignette = isMaster && AppSettings.styleVignette,
         underwater = mode == Mode.UNDERWATER, tilt = if (mode == Mode.TILTSHIFT) tilt else null,
@@ -431,14 +445,16 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val scanDoc = mode == Mode.SCAN && scanDraft == null && !scanSaveOpen
     val scanPalm = mode == Mode.PHOTO && AppSettings.showPalm && com.claudeborne.camera.scan.HandScanner.supported && !launch.returnsResult
     val hintsOn = AppSettings.smartSuggestions
-    DisposableEffect(scanQr, scanText, scanDoc, scanPalm, mode) {
+    val scanCover = mode == Mode.PORTRAIT && hintsOn
+    DisposableEffect(scanQr, scanText, scanDoc, scanPalm, scanCover, mode) {
         val inText = mode == Mode.TEXT
         var pass = 0
         var palmStreak = 0
         renderer.analysisEveryMs = if (inText) 500L else 450L
-        renderer.analysis = if (scanQr || scanText || scanDoc || scanPalm) { rgba, w, h ->
+        renderer.analysis = if (scanQr || scanText || scanDoc || scanPalm || scanCover) { rgba, w, h ->
             val wantText = scanText && (inText || pass++ % 3 == 0) // in Photo, text is only looked for now and then
-            scanner.look(rgba, w, h, scanQr, wantText, scanDoc, scanPalm && runJob == null && countdown == null) { hit ->
+            scanner.look(rgba, w, h, scanQr, wantText, scanDoc, scanPalm && runJob == null && countdown == null, scanCover) { hit ->
+                if (scanCover) tooClose = PortraitRules.tooClose(hit.cover)
                 if (scanDoc) docQuad = hit.quad
                 if (scanPalm) { // the palm has to stay in view for a few looks in a row, so a passing hand does not take a photo
                     palmStreak = if (hit.palm) palmStreak + 1 else if (palmStreak < 0) palmStreak + 1 else 0
@@ -451,7 +467,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         } else null
         onDispose { renderer.analysis = null }
     }
-    LaunchedEffect(mode) { qr = null; textOutline = null; suggestText = false; docQuad = null }
+    LaunchedEffect(mode) { qr = null; textOutline = null; suggestText = false; docQuad = null; tooClose = false }
     LaunchedEffect(qr) { while (qr != null) { delay(500); if (android.os.SystemClock.elapsedRealtime() - qrSeenAt > 6000) qr = null } }
     BackHandler(textResult != null) { textResult = null }
     BackHandler(scanDraft != null && !scanBusy) { scanDraft = null }
@@ -488,6 +504,27 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     LaunchedEffect(focusTick) { if (focusPoint != null) { delay(3500); if (!engine.locked) focusPoint = null } }
     LaunchedEffect(toast) { if (toast != null) { delay(1600); toast = null } }
 
+    /** AI Telescope Zoom: the long-zoom photo is redrawn by the Real-ESRGAN model and saved as a second picture. Slow: a bar shows the progress. */
+    fun startAi(photo: CameraEngine.Photo) {
+        aiProgress = 0f
+        scope.launch(Dispatchers.Default) {
+            val result = runCatching {
+                val src = com.claudeborne.camera.proc.Frames.decode(photo.bytes, photo.jpegOrientation, AI_INPUT_MAX) ?: error("unreadable photo")
+                val up = upscale4x(context, src) { p -> aiProgress = p }
+                src.recycle()
+                com.claudeborne.camera.proc.Frames.jpeg(up, 95).also { up.recycle() }
+            }.getOrNull()
+            withContext(Dispatchers.Main) {
+                aiProgress = null
+                if (result == null) say("AI zoom could not finish")
+                else PhotoSaver.save(context, result, StillFormat.JPEG, null, false, System.currentTimeMillis()) { r ->
+                    r.onSuccess { uri -> say("AI zoom picture saved"); AppSettings.rememberLastPhoto(uri.toString()); scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() } }
+                        .onFailure { say("Could not save the AI zoom picture") }
+                }
+            }
+        }
+    }
+
     // photos arrive on the camera thread; saving continues on its own thread even if this screen goes away
     DisposableEffect(engine) {
         engine.listener = object : CameraEngine.Listener {
@@ -507,6 +544,21 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     }
                     return
                 }
+                if (portraitOwnNow && !skipPortrait[0]) { // our own portrait: cut the person out and blur the rest, then save it like any photo
+                    readingText = true
+                    busyText = "BLURRING THE BACKGROUND"
+                    scope.launch(Dispatchers.Default) {
+                        val out = runCatching { Portrait.apply(photo.bytes, photo.jpegOrientation, photo.mirrored, AppSettings.portraitF) }.getOrNull()
+                        withContext(Dispatchers.Main) {
+                            readingText = false
+                            skipPortrait[0] = true
+                            if (out == null) { say("No person found. Saved without blur."); engine.listener?.onPhoto(photo) } else engine.listener?.onPhoto(CameraEngine.Photo(out, StillFormat.JPEG, 0, false, false))
+                        }
+                    }
+                    return
+                }
+                skipPortrait[0] = false
+                if (AppSettings.aiZoom && aiProgress == null && photo.format != StillFormat.DNG && facing == Facing.BACK && zoom >= 9.5f && !launchNow.secure) startAi(photo)
                 if (scanModeNow) { // Scan Docs keeps no photo either: the picture goes to the page editor
                     readingText = true
                     scope.launch(Dispatchers.Default) {
@@ -1151,6 +1203,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
                 Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                    Visible(portraitOwnNow && !readingText, enter = popEnter, exit = popExit) {
+                        QualityPill(PortraitRules.label(AppSettings.portraitF), qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
+                    }
                     Visible(mode == Mode.LONGEXP && runJob == null && !readingText, enter = popEnter, exit = popExit) {
                         QualityPill("${AppSettings.lexpSec} S · ${if (AppSettings.lexpTrails) "TRAILS" else "SMOOTH"}", qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
@@ -1184,6 +1239,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 }
                 Visible(formatOpen && isMaster, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
                     QualityPanel(listOf(ChipRow("PHOTO FORMAT", MasterFormat.entries.map { f -> Chip(f.label, f == masterFormat) { AppSettings.masterFormat = f.ordinal; formatOpen = false; say("Format: ${f.label}") } })))
+                }
+                Visible(qualityOpen && portraitOwnNow, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
+                    QualityPanel(listOf(ChipRow("BACKGROUND BLUR (APERTURE)", PortraitRules.F_NUMBERS.indices.map { i -> Chip(PortraitRules.label(i), i == AppSettings.portraitF) { AppSettings.portraitF = i; qualityOpen = false } })))
                 }
                 Visible(qualityOpen && mode == Mode.LONGEXP, Modifier.align(Alignment.TopEnd).padding(top = 72.dp, start = 16.dp, end = 16.dp), enter = popEnter, exit = popExit) {
                     QualityPanel(listOf(
@@ -1220,8 +1278,12 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     Visible(mode == Mode.SCAN && scanPages.isNotEmpty() && scanDraft == null && menu == Menu.NONE, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
                         SuggestChip(if (scanPages.size == 1) "Done · 1 page" else "Done · ${scanPages.size} pages", { scanSaveOpen = true })
                     }
+                    Visible(aiProgress != null, enter = popEnter, exit = popExit) { WorkingLine("AI ZOOM · ENHANCING", aiProgress) }
                     Visible(nightOk && hintsOn && (engine.liveIso >= 1600 || engine.liveNs >= 100_000_000L) && mode == Mode.PHOTO && extWanted < 0 && qr == null && !suggestText && menu == Menu.NONE && !recording, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
                         SuggestChip("Try Night mode", { selectMode(Mode.NIGHT) })
+                    }
+                    Visible(tooClose && mode == Mode.PORTRAIT && menu == Menu.NONE, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
+                        SuggestChip("Move further away", {})
                     }
                     Visible(macro && mode == Mode.PHOTO && menu == Menu.NONE, Modifier.align(Alignment.TopCenter), enter = popEnter, exit = popExit) {
                         SuggestChip("Macro · tap to leave", ::leaveMacro)
@@ -1345,7 +1407,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         onInterval = { intervalSec = it; menu = Menu.NONE; say(if (it == 0) "Interval shooting: Off" else "Interval: every $it s") },
                         onSettings = { menu = Menu.NONE; onSettings() },
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
-                        showSoft = mode == Mode.PHOTO, soft = AppSettings.softLight, short = mode.oneShot,
+                        showSoft = mode == Mode.PHOTO || mode == Mode.PORTRAIT, soft = AppSettings.softLight, short = mode.oneShot,
                         showLive = mode == Mode.PHOTO && !front && !launch.secure, live = AppSettings.livePhoto, onLive = { AppSettings.livePhoto = !AppSettings.livePhoto; menu = Menu.NONE; say("Live photo: ${if (AppSettings.livePhoto) "On" else "Off"}") },
                         showAutoHdr = mode == Mode.PHOTO && !front && DocScanner.available, autoHdr = AppSettings.autoHdr, onAutoHdr = { AppSettings.autoHdr = !AppSettings.autoHdr; menu = Menu.NONE; say("Auto HDR: ${if (AppSettings.autoHdr) "On" else "Off"}") },
                         showAction = mode == Mode.PHOTO && info?.actionOk == true, action = action, onAction = { action = !action; menu = Menu.NONE; say("Action mode: ${if (action) "On" else "Off"}") },

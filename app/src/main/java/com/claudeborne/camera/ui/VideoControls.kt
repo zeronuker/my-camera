@@ -66,6 +66,7 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     MASTER("MASTER", null),
     VIDEO("VIDEO", VideoStyle.NORMAL),
     PHOTO("PHOTO", null),
+    PORTRAIT("PORTRAIT", null),
     NIGHT("NIGHT", null),
     PANO("PANO", null),
     LONGEXP("LONG EXP", null),
