@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -26,21 +27,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.background
 
-private fun iconOf(m: Mode): Icon = when (m) {
-    Mode.MASTER -> Icon.HISTOGRAM
-    Mode.VIDEO, Mode.PROVIDEO -> Icon.VIDEO
-    Mode.PHOTO -> Icon.CAMERA
-    Mode.PORTRAIT -> Icon.RETOUCH
-    Mode.TEXT -> Icon.KEYBOARD
-    Mode.NIGHT -> Icon.SOFT_LIGHT
-    Mode.PANO -> Icon.ASPECT
-    Mode.LONGEXP -> Icon.SUN
-    Mode.SCAN -> Icon.DOCUMENT
-    Mode.SLOMO -> Icon.INTERVAL
-    Mode.TIMELAPSE -> Icon.TIMER
-    Mode.TILTSHIFT -> Icon.FILTER
-    Mode.UNDERWATER -> Icon.FOCUS_LOCK
-    Mode.DUALPHOTO, Mode.DUAL, Mode.QUAD -> Icon.DUAL
+private fun iconOf(m: Group): Icon = when (m) {
+    Group.MASTER -> Icon.HISTOGRAM
+    Group.VIDEO -> Icon.VIDEO
+    Group.PHOTO -> Icon.CAMERA
+    Group.PORTRAIT -> Icon.RETOUCH
+    Group.SCAN -> Icon.DOCUMENT
+    Group.CREATIVE -> Icon.FILTER
+    Group.DUAL -> Icon.DUAL
 }
 
 /**
@@ -49,8 +43,8 @@ private fun iconOf(m: Mode): Icon = when (m) {
  */
 @Composable
 internal fun MoreGrid(
-    shown: List<Mode>, selected: Mode, editing: Boolean,
-    onPick: (Mode) -> Unit, onMove: (Mode, Int) -> Unit, onEdit: () -> Unit,
+    shown: List<Group>, selected: Group, editing: Boolean,
+    onPick: (Group) -> Unit, onMove: (Group, Int) -> Unit, onEdit: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val modes = if (editing) shown else ModeOrder.more(shown)
@@ -75,7 +69,7 @@ internal fun MoreGrid(
 }
 
 @Composable
-private fun ModeTile(m: Mode, active: Boolean, editing: Boolean, inStrip: Boolean, canEarlier: Boolean, canLater: Boolean, onPick: () -> Unit, onMove: (Int) -> Unit) {
+private fun ModeTile(m: Group, active: Boolean, editing: Boolean, inStrip: Boolean, canEarlier: Boolean, canLater: Boolean, onPick: () -> Unit, onMove: (Int) -> Unit) {
     val fill by animateColorAsState(if (active) DarkCb.mint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.1f), tween(MOTION_FAST_MS), label = "tile")
     val rim by animateColorAsState(if (editing && inStrip) DarkCb.mint.copy(alpha = 0.7f) else Color.Transparent, tween(MOTION_FAST_MS), label = "tile rim")
     Column(Modifier.width(80.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -89,3 +83,23 @@ private fun ModeTile(m: Mode, active: Boolean, editing: Boolean, inStrip: Boolea
         }
     }
 }
+
+/**
+ * The variants of the chosen group, in a small pill above the strip (for example NORMAL · SLO-MO · TIME-LAPSE · PRO in VIDEO).
+ * Only the variants the phone can do are passed in; with fewer than two there is nothing to choose and the bar is not shown.
+ */
+@Composable
+internal fun VariantBar(group: Group, variants: List<Mode>, selected: Mode, enabled: Boolean, onPick: (Mode) -> Unit, modifier: Modifier = Modifier) {
+    Row(modifier.chrome().padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
+        variants.forEach { m ->
+            val on = m == selected
+            val fill by animateColorAsState(if (on) DarkCb.mint.copy(alpha = 0.22f) else Color.Transparent, tween(MOTION_FAST_MS), label = "variant fill")
+            Box(Modifier.height(32.dp).clip(CircleShape).background(fill).clickable(enabled = enabled && !on) { onPick(m) }.padding(horizontal = 12.dp), Alignment.Center) {
+                Text(group.variantOf(m), maxLines = 1, softWrap = false, style = monoStyle(glide(on, DarkCb.mint, Color.White), 0.8.sp).copy(fontSize = 11.sp))
+            }
+        }
+    }
+}
+
+/** The group and variants the variant bar last had, so it can fade out with its own words. */
+internal class VariantHold(var group: Group, var variants: List<Mode>)

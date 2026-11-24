@@ -97,8 +97,6 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     /** Modes whose shutter runs its own sequence (reading, stitching, stacking): no timer, interval, burst or filters. */
     val oneShot get() = isScanner || this == PANO || this == LONGEXP
 
-    /** The neighbour in the strip (only among the [shown] modes), or null at its ends. */
-    fun step(by: Int, shown: List<Mode> = entries): Mode? = shown.getOrNull(shown.indexOf(this) + by)
 }
 
 private val RedRecord = Color(0xFFD33A33)
@@ -107,7 +105,7 @@ private const val MORE_SLOT = -1
 
 /** The mode names under the shutter: tap one, or swipe along the strip. A pill glides under the chosen name. */
 @Composable
-internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit, onReselect: (Mode) -> Unit = {}, onMore: () -> Unit = {}) {
+internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, onSelect: (Group) -> Unit, onReselect: (Group) -> Unit = {}, onMore: () -> Unit = {}) {
     val density = LocalDensity.current
     val spots = remember { mutableStateMapOf<Int, Pair<Float, Float>>() } // left edge and width of each name, in pixels
     // the first five modes have their own names; the rest live in the More grid, whose slot shows the chosen one's name
@@ -150,7 +148,7 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
                     Box(
                         Modifier.height(36.dp).padding(horizontal = 8.dp).clickable(enabled = enabled) {
                             if (slot == MORE_SLOT) onMore()
-                            else Mode.entries[slot].let { m -> if (m == selected) onReselect(m) else onSelect(m) }
+                            else Group.entries[slot].let { g -> if (g == selected) onReselect(g) else onSelect(g) }
                         }.onGloballyPositioned { spots[slot] = it.positionInParent().x - with(density) { 8.dp.toPx() } to it.size.width + with(density) { 16.dp.toPx() } },
                         Alignment.Center,
                     ) {

@@ -46,6 +46,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.rememberUpdatedState
 import com.claudeborne.camera.LaunchKind
 import com.claudeborne.camera.LaunchRequest
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -410,15 +411,19 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
         onDispose { val old = r; if (old != null) { ring = null; renderer.stopClip { old.release() } } }
     }
-    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk, quadOk, AppSettings.modeOrder) {
+    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk, quadOk) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        ModeOrder.parse(AppSettings.modeOrder).filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (quadOk && (multiCams?.physical?.size ?: 0) >= 2) }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        Mode.entries.filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (quadOk && (multiCams?.physical?.size ?: 0) >= 2) }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
     LaunchedEffect(hsOk) { if (!hsOk && mode == Mode.SLOMO && !recording) mode = Mode.VIDEO } // the camera refused high-speed: slo-mo goes away
     // what the Preserve switches keep (Settings > General > Preserve settings): the mode, the exposure value and the Portrait zoom
     LaunchedEffect(mode) { if (!launch.secure && !launch.returnsResult) AppSettings.lastMode = mode.name }
+    // the strip shows groups of modes (VIDEO holds slo-mo, time-lapse and Pro video...); a group is shown when the phone can do any of its modes
+    val shownGroups = remember(shownModes, AppSettings.modeOrder) { ModeOrder.parse(AppSettings.modeOrder).filter { g -> g.members.any { it in shownModes } } }
+    val lastVariant = remember { mutableStateMapOf<Group, Mode>() } // the variant last used in each group: picking the group again goes back to it
+    LaunchedEffect(mode) { lastVariant[mode.group] = mode }
     LaunchedEffect(shownModes) { if (mode !in shownModes && !recording && !savingVideo) mode = Mode.PHOTO } // a kept mode the phone cannot do right now
     LaunchedEffect(ev) { delay(300); AppSettings.evSaved = (ev * 100).roundToInt() }
     LaunchedEffect(mode, zoom, pinching, facing) { if (mode == Mode.PORTRAIT && facing == Facing.BACK && !pinching) { delay(400); AppSettings.portraitZoom = (zoom * 1000).roundToInt() } }
@@ -1355,6 +1360,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
 
+
     fun selectMode(m: Mode) {
         if (m == mode || recording || savingVideo) return
         menu = Menu.NONE
@@ -1370,6 +1376,12 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         if (m.isVideo && flash != Flash.TORCH) flash = Flash.OFF
         mode = m
         say(m.label)
+    }
+
+    /** A group on the strip: go to the variant used last in it (or its first one the phone can do). */
+    fun selectGroup(g: Group) {
+        if (g == mode.group) return
+        selectMode(lastVariant[g]?.takeIf { it in shownModes } ?: g.members.first { it in shownModes })
     }
 
     LaunchedEffect(launch.serial) {
@@ -1513,7 +1525,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         else if (AppSettings.tapToCapture && !mode.isVideo) shutterTap()
                         else if (!multi) focus(pos, lock = false)
                     },
-                    onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.step(d, shownModes)?.let(::selectMode) },
+                    onSwipe = { d -> if (menu == Menu.NONE && !recording && !savingVideo) mode.group.step(d, shownGroups)?.let(::selectGroup) },
                     onLongPress = { pos -> if (menu == Menu.NONE) focus(pos, lock = true) },
                     onZoom = { change -> if (multi) Unit else if (mode == Mode.TILTSHIFT) tilt = TiltRules.resize(tilt, change) else { zoomJob?.cancel(); zoom = clampZoom(zoom * change); pinching = true } },
                     onTwist = { deg -> if (mode == Mode.TILTSHIFT) tilt = TiltRules.clamp(tilt.copy(angle = tilt.angle - deg)) },
@@ -1755,19 +1767,26 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                             }
                         }
+                        // the variants of the chosen group (slo-mo, night...), kept while the bar fades out
+                        val variantsNow = mode.group.members.filter { it in shownModes }
+                        val barHold = remember { VariantHold(mode.group, variantsNow) }
+                        if (variantsNow.size > 1) { barHold.group = mode.group; barHold.variants = variantsNow }
+                        Visible(variantsNow.size > 1, enter = popEnter, exit = popExit) {
+                            VariantBar(barHold.group, barHold.variants, mode, !recording && !savingVideo, ::selectMode)
+                        }
                         } }
                         Visible(moreOpen, enter = popEnter, exit = popExit) {
                             MoreGrid(
-                                shownModes, mode, moreEditing,
-                                onPick = { m -> if (m == mode) { moreOpen = false; moreEditing = false } else selectMode(m) },
-                                onMove = { m, by -> AppSettings.modeOrder = ModeOrder.encode(ModeOrder.move(ModeOrder.parse(AppSettings.modeOrder), shownModes, m, by)) },
+                                shownGroups, mode.group, moreEditing,
+                                onPick = { g -> if (g == mode.group) { moreOpen = false; moreEditing = false } else selectGroup(g) },
+                                onMove = { m, by -> AppSettings.modeOrder = ModeOrder.encode(ModeOrder.move(ModeOrder.parse(AppSettings.modeOrder), shownGroups, m, by)) },
                                 onEdit = { moreEditing = !moreEditing },
                             )
                         }
                         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            if (shownModes.size > 1) ModeStrip(
-                                mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode,
-                                onReselect = { m -> if (m == Mode.VIDEO) { menu = Menu.SCENES; evOpen = false; qualityOpen = false; moreOpen = false } },
+                            if (shownGroups.size > 1) ModeStrip(
+                                mode.group, shownGroups, enabled = !recording && !savingVideo, onSelect = ::selectGroup,
+                                onReselect = { g -> if (g == Group.VIDEO && mode == Mode.VIDEO) { menu = Menu.SCENES; evOpen = false; qualityOpen = false; moreOpen = false } },
                                 onMore = { moreOpen = !moreOpen; moreEditing = false; evOpen = false; qualityOpen = false; formatOpen = false; proOpen = null },
                             ) else Spacer(Modifier.height(36.dp))
                         }
