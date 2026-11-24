@@ -318,6 +318,7 @@ class PreviewRenderer(
         var gotFrame = false
         if (encoding == null && clip == null) { // while an encoder runs, its events take every frame (see encodeFrame)
             gotFrame = takeFrame(st)
+            if (gotFrame) com.claudeborne.camera.data.Perf.firstFrame()
             while (pending.get() > 0 && takeFrame(st)) { /* show the newest */ }
             takeExtras()
         }

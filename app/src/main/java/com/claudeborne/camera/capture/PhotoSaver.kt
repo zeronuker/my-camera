@@ -36,6 +36,9 @@ object PhotoSaver {
     private val io = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
+    /** A burst waits when this many photos are still being saved, so photos (and their look passes) cannot pile up in memory. */
+    const val MAX_WAITING = 4
+
     /** Below this much free space the shutter refuses and says so instead of failing half way. */
     private const val MIN_FREE_BYTES = 60L * 1024 * 1024
 
@@ -53,7 +56,9 @@ object PhotoSaver {
         val app = context.applicationContext
         saving++
         io.execute {
+            val started = android.os.SystemClock.elapsedRealtime()
             val result = runCatching { write(app, bytes, format, exifOrientation, squareCrop, timeMs, edit, motion, nameSuffix) }
+            com.claudeborne.camera.data.Perf.saved(started, edit != null, saving - 1)
             main.post {
                 saving--
                 done(result)

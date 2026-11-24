@@ -38,6 +38,7 @@ class MainActivity : ComponentActivity() {
     /** A launch from the lock screen may show over it; any other launch may not. */
     private fun apply(request: LaunchRequest) {
         launch = request
+        com.claudeborne.camera.data.Perf.launched(request.kind.name)
         setShowWhenLocked(request.secure)
     }
 

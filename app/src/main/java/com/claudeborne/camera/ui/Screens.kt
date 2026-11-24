@@ -52,34 +52,39 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private enum class Screen { SPLASH, CAMERA, SETTINGS, ABOUT, DIAGNOSTICS }
+private enum class Screen { CAMERA, SETTINGS, ABOUT, DIAGNOSTICS }
 
-/** Phase 0 navigation: splash, an empty camera screen, Settings, About, Diagnostics. Each screen fades into the next. */
+/** Navigation: the camera, Settings, About, Diagnostics. Going deeper pushes in from the right, coming back fades. A splash covers the camera while it opens. */
 @Composable
 fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.LaunchRequest(), onResult: (android.net.Uri?) -> Unit = {}) {
-    var screen by remember { mutableStateOf(Screen.SPLASH) }
-    LaunchedEffect(Unit) { delay(700); screen = Screen.CAMERA }
+    var screen by remember { mutableStateOf(Screen.CAMERA) }
+    // the camera opens at once under the splash; the splash fades away on the first live frame (or after 1.5 s, e.g. while a permission is asked)
+    var splash by remember { mutableStateOf(true) }
+    LaunchedEffect(com.claudeborne.camera.data.Perf.liveFrame) { if (com.claudeborne.camera.data.Perf.liveFrame) { delay(120); splash = false } }
+    LaunchedEffect(Unit) { delay(1500); splash = false }
     BackHandler(screen == Screen.SETTINGS || screen == Screen.ABOUT || screen == Screen.DIAGNOSTICS) {
         screen = when (screen) { Screen.DIAGNOSTICS -> Screen.ABOUT; Screen.ABOUT -> Screen.SETTINGS; else -> Screen.CAMERA }
     }
     AnimatedContent(
         screen,
         transitionSpec = {
-            // going deeper (camera > settings > about > diagnostics) pushes in from the right; coming back, and the splash, fade
-            if (initialState != Screen.SPLASH && targetState.ordinal > initialState.ordinal) pushEnter togetherWith fadeOut(tween(MOTION_FAST_MS))
+            // going deeper (camera > settings > about > diagnostics) pushes in from the right; coming back fades
+            if (targetState.ordinal > initialState.ordinal) pushEnter togetherWith fadeOut(tween(MOTION_FAST_MS))
             else fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS))
         },
         label = "screen",
     ) { s ->
         when (s) {
-            Screen.SPLASH -> Box(Modifier.fillMaxSize().background(DarkCb.surface0), Alignment.Center) {
-                SystemBarIcons(darkIcons = false)
-                Text("CAMERA", style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
-            }
             Screen.CAMERA -> CameraScreen(launch, onResult) { if (!launch.secure) screen = Screen.SETTINGS }
             Screen.SETTINGS -> SettingsScreen({ screen = Screen.CAMERA }, { screen = Screen.ABOUT })
             Screen.ABOUT -> AboutScreen({ screen = Screen.SETTINGS }, { screen = Screen.DIAGNOSTICS })
             Screen.DIAGNOSTICS -> DiagnosticsScreen { screen = Screen.ABOUT }
+        }
+    }
+    Visible(splash && screen == Screen.CAMERA, Modifier.fillMaxSize(), enter = androidx.compose.animation.EnterTransition.None, exit = fadeOut(tween(MOTION_MS))) {
+        Box(Modifier.fillMaxSize().background(DarkCb.surface0), Alignment.Center) {
+            SystemBarIcons(darkIcons = false)
+            Text("CAMERA", style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
         }
     }
     if (!launch.secure) UpdateDialog() // nothing but the camera over the lock screen

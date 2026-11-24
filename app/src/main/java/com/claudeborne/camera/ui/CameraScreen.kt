@@ -685,6 +685,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             }
 
             override fun onPhoto(photo: CameraEngine.Photo) {
+                com.claudeborne.camera.data.Perf.photoCaptured()
                 screenFlash = false
                 collect?.let { it(photo); return }
                 if (textModeNow) { // Text mode keeps no photo: it reads the words and opens the editor
@@ -1395,6 +1396,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
 
     /** Shutter tap: a timer run, an interval run or a single photo; a second tap while one is running stops it. */
     fun shutterTap(timer: Int? = null) {
+        com.claudeborne.camera.data.Perf.shutterPressed()
         if (multi) return dualPhoto()
         if (mode.isVideo) return recordTap()
         menu = Menu.NONE
@@ -1453,6 +1455,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         val until = android.os.SystemClock.elapsedRealtime() + 500
                         while (engine.focus != CameraEngine.Focus.FOCUSED && android.os.SystemClock.elapsedRealtime() < until) delay(40)
                     }
+                    while (isActive && PhotoSaver.saving >= PhotoSaver.MAX_WAITING) delay(40) // saving (and the look pass) is slower than the camera: let it catch up
                     if (!captureOnce(useFlash = false)) break // a burst never uses the flash: it would wait for the light every time
                     runCount = ++n
                 }
