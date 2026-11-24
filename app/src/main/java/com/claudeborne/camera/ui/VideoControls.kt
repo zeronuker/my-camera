@@ -48,6 +48,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -67,10 +69,10 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     VIDEO("VIDEO", VideoStyle.NORMAL),
     PHOTO("PHOTO", null),
     PORTRAIT("PORTRAIT", null),
+    TEXT("TEXT", null),
     NIGHT("NIGHT", null),
     PANO("PANO", null),
     LONGEXP("LONG EXP", null),
-    TEXT("TEXT", null),
     SCAN("SCAN DOCS", null),
     SLOMO("SLO-MO", VideoStyle.SLOMO),
     TIMELAPSE("TIME-LAPSE", VideoStyle.TIMELAPSE),
@@ -101,12 +103,19 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
 
 private val RedRecord = Color(0xFFD33A33)
 
+private const val MORE_SLOT = -1
+
 /** The mode names under the shutter: tap one, or swipe along the strip. A pill glides under the chosen name. */
 @Composable
-internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit, onReselect: (Mode) -> Unit = {}) {
+internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSelect: (Mode) -> Unit, onReselect: (Mode) -> Unit = {}, onMore: () -> Unit = {}) {
     val density = LocalDensity.current
     val spots = remember { mutableStateMapOf<Int, Pair<Float, Float>>() } // left edge and width of each name, in pixels
-    val spot = spots[selected.ordinal]
+    // the first five modes have their own names; the rest live in the More grid, whose slot shows the chosen one's name
+    val more = ModeOrder.more(shown)
+    val inMore = selected in more
+    val slots = ModeOrder.strip(shown).map { it.ordinal to it.label } + if (more.isNotEmpty()) listOf(MORE_SLOT to if (inMore) selected.label else "MORE") else emptyList()
+    val selectedSlot = if (inMore) MORE_SLOT else selected.ordinal
+    val spot = spots[selectedSlot]
     val x by animateFloatAsState(spot?.first ?: 0f, tween(MOTION_MS), label = "mode pill x")
     val w by animateFloatAsState(spot?.second ?: 0f, tween(MOTION_MS), label = "mode pill width")
     val current by rememberUpdatedState(selected)
@@ -119,7 +128,7 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
         if (spot != null && viewWidth > 0) scroll.animateScrollTo((spot.first + spot.second / 2 - viewWidth / 2).roundToInt().coerceAtLeast(0), tween(MOTION_MS))
     }
     Box(
-        Modifier.fillMaxWidth().onSizeChanged { viewWidth = it.width }.pointerInput(Unit) {
+        Modifier.fillMaxWidth().onSizeChanged { viewWidth = it.width }.fadeEdges().pointerInput(Unit) {
             var total = 0f
             detectHorizontalDragGestures(
                 onDragStart = { total = 0f },
@@ -137,12 +146,19 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
                 )
             }
             Row(Modifier.height(36.dp)) {
-                shown.forEach { m ->
+                slots.forEach { (slot, label) ->
                     Box(
-                        Modifier.height(36.dp).padding(horizontal = 14.dp).clickable(enabled = enabled) { if (m == selected) onReselect(m) else onSelect(m) }
-                            .onGloballyPositioned { spots[m.ordinal] = it.positionInParent().x - with(density) { 14.dp.toPx() } to it.size.width + with(density) { 28.dp.toPx() } },
+                        Modifier.height(36.dp).padding(horizontal = 8.dp).clickable(enabled = enabled) {
+                            if (slot == MORE_SLOT) onMore()
+                            else Mode.entries[slot].let { m -> if (m == selected) onReselect(m) else onSelect(m) }
+                        }.onGloballyPositioned { spots[slot] = it.positionInParent().x - with(density) { 8.dp.toPx() } to it.size.width + with(density) { 16.dp.toPx() } },
                         Alignment.Center,
-                    ) { Text(m.label, maxLines = 1, softWrap = false, style = monoStyle(glide(m == selected, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp)) }
+                    ) {
+                        // the name swaps with a short fade when the More slot takes another mode's name
+                        AnimatedContent(label, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "mode name") { t ->
+                            Text(t, maxLines = 1, softWrap = false, style = monoStyle(glide(slot == selectedSlot, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp))
+                        }
+                    }
                 }
             }
         }
@@ -272,4 +288,13 @@ internal fun MicDialog(blocked: Boolean, onAllow: () -> Unit, onSettings: () -> 
         }
         BrandButton("NOT NOW", Modifier.fillMaxWidth(), cb = DarkCb, onClick = onCancel)
     }
+}
+
+/** Names that run off the strip fade out at both ends instead of being cut, as in the stock camera. */
+private fun Modifier.fadeEdges(): Modifier = graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen).drawWithContent {
+    drawContent()
+    drawRect(
+        androidx.compose.ui.graphics.Brush.horizontalGradient(0f to Color.Transparent, 0.1f to Color.Black, 0.9f to Color.Black, 1f to Color.Transparent),
+        blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
+    )
 }

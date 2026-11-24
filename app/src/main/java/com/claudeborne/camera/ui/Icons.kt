@@ -23,7 +23,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK, HISTOGRAM, FACE_METERING, FILTER, STYLES, SOFT_LIGHT, RETOUCH, LIVE }
+enum class Icon { SHARE, HEART, EDIT, TRASH, INFO, MORE, SEARCH, FOLDER, CHEVRON, CHECK, PLUS, CLOSE, REWIND, FORWARD, SPEAKER, SPEAKER_OFF, PLUG, REFRESH, COMPUTER, SCAN, KEYBOARD, WIFI, DIRECT, GEAR, IMAGE, VIDEO, AUDIO, DOCUMENT, APK, ARCHIVE, LARGE, OTHERS, MAP, DUPLICATES, DUAL, LOCK, TRANSFER, FLASH, FLASH_OFF, SIX_DOT, TIMER, ASPECT, INTERVAL, SUN, CAMERA, STEADY, PAUSE, PLAY, FOCUS_LOCK, HISTOGRAM, FACE_METERING, FILTER, STYLES, SOFT_LIGHT, RETOUCH, LIVE, PENCIL }
 
 /** Line icons drawn on a 24 x 24 grid, so the app needs no icon library and they match the brand's thin outlines. */
 @Composable
@@ -278,6 +278,10 @@ fun CbIcon(icon: Icon, color: Color, modifier: Modifier = Modifier, filled: Bool
                 drawCircle(color, 3f * k, p(12f, 12f))
                 drawCircle(color, 7f * k, p(12f, 12f), style = line)
                 drawCircle(color, 10.2f * k, p(12f, 12f), style = Stroke(1.6f * k, pathEffect = androidx.compose.ui.graphics.PathEffect.dashPathEffect(floatArrayOf(1.2f * k, 2.6f * k))))
+            }
+            Icon.PENCIL -> { // a slanted pencil
+                shape(poly(false, 4f, 20f, 5f, 15f, 16f, 4f, 20f, 8f, 9f, 19f, 4f, 20f))
+                seg(13.5f, 6.5f, 17.5f, 10.5f)
             }
             Icon.HISTOGRAM -> {
                 round(3f, 4f, 18f, 16f, 2.5f)

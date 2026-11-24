@@ -191,6 +191,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var timerSec by remember { mutableIntStateOf(0) }
     var intervalSec by remember { mutableIntStateOf(0) }
     var menu by remember { mutableStateOf(Menu.NONE) }
+    var moreOpen by remember { mutableStateOf(false) } // the More grid of modes
+    var moreEditing by remember { mutableStateOf(false) } // its pencil: moving modes
     var evOpen by remember { mutableStateOf(false) }
     var ev by remember { mutableFloatStateOf(0f) }
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
@@ -406,9 +408,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
         onDispose { val old = r; if (old != null) { ring = null; renderer.stopClip { old.release() } } }
     }
-    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk, quadOk) {
+    val shownModes = remember(rearCaps, wantHevc, hsOk, launch.kind, nightOk, quadOk, AppSettings.modeOrder) {
         val slo = rearCaps != null && VideoQuality.sloMoOptions(rearCaps, true, hsOk) { res, fps -> Encoders.codecFor(wantHevc, res, fps) != null }.isNotEmpty()
-        Mode.entries.filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (quadOk && (multiCams?.physical?.size ?: 0) >= 2) }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
+        ModeOrder.parse(AppSettings.modeOrder).filter { !it.multi || multiCams != null }.filter { it != Mode.QUAD || (quadOk && (multiCams?.physical?.size ?: 0) >= 2) }.filter { it != Mode.SLOMO || slo }.filter { it != Mode.SCAN || DocScanner.available }.filter { it != Mode.NIGHT || nightOk || DocScanner.available }.filter { (it != Mode.PANO && it != Mode.LONGEXP) || DocScanner.available }.filter { it != Mode.PANO || hasGyro }.filter { !launch.secure || (it != Mode.MASTER && it != Mode.PROVIDEO) }.filter { // DNG files and manual controls are not for the lock screen
             when (launch.kind) { LaunchKind.IMAGE_CAPTURE -> it == Mode.PHOTO; LaunchKind.VIDEO_CAPTURE -> it == Mode.VIDEO; else -> true }
         }
     }
@@ -1348,6 +1350,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     fun selectMode(m: Mode) {
         if (m == mode || recording || savingVideo) return
         menu = Menu.NONE
+        moreOpen = false; moreEditing = false
         evOpen = false
         qualityOpen = false
         formatOpen = false
@@ -1495,7 +1498,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                 cameraGestures(
                     onTap = { pos ->
-                        if (menu != Menu.NONE || evOpen || qualityOpen) { menu = Menu.NONE; evOpen = false; qualityOpen = false }
+                        if (menu != Menu.NONE || evOpen || qualityOpen || moreOpen) { menu = Menu.NONE; evOpen = false; qualityOpen = false; moreOpen = false; moreEditing = false }
                         else if (AppSettings.tapToCapture && !mode.isVideo) shutterTap()
                         else if (!multi) focus(pos, lock = false)
                     },
@@ -1575,7 +1578,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             if (mode == Mode.TIMELAPSE) TimeLapse.label(AppSettings.lapseSpeed) else picked?.label.orEmpty(), qualityOpen,
                         ) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
-                    RoundButton(onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; evOpen = false; qualityOpen = false; formatOpen = false; proOpen = null }) {
+                    RoundButton(onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; moreOpen = false; moreEditing = false; evOpen = false; qualityOpen = false; formatOpen = false; proOpen = null }) {
                         CbIcon(Icon.SIX_DOT, if (menu != Menu.NONE) DarkCb.mint else Color.White, size = 24.dp)
                     }
                 }
@@ -1650,6 +1653,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
 
                 Visible(menu == Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
                     Column(Modifier.padding(bottom = 12.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                        // the More grid covers the controls above the strip, as in the stock camera
+                        Visible(!moreOpen, enter = popEnter, exit = popExit) { Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
                         Visible(proMode && proCaps != null, enter = popEnter, exit = popExit) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                 val toggles = buildList {
@@ -1739,8 +1744,21 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                             }
                         }
+                        } }
+                        Visible(moreOpen, enter = popEnter, exit = popExit) {
+                            MoreGrid(
+                                shownModes, mode, moreEditing,
+                                onPick = { m -> if (m == mode) { moreOpen = false; moreEditing = false } else selectMode(m) },
+                                onMove = { m, by -> AppSettings.modeOrder = ModeOrder.encode(ModeOrder.move(ModeOrder.parse(AppSettings.modeOrder), shownModes, m, by)) },
+                                onEdit = { moreEditing = !moreEditing },
+                            )
+                        }
                         Box(Modifier.padding(horizontal = 12.dp, vertical = 8.dp)) {
-                            if (shownModes.size > 1) ModeStrip(mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode, onReselect = { m -> if (m == Mode.VIDEO) { menu = Menu.SCENES; evOpen = false; qualityOpen = false } }) else Spacer(Modifier.height(36.dp))
+                            if (shownModes.size > 1) ModeStrip(
+                                mode, shownModes, enabled = !recording && !savingVideo, onSelect = ::selectMode,
+                                onReselect = { m -> if (m == Mode.VIDEO) { menu = Menu.SCENES; evOpen = false; qualityOpen = false; moreOpen = false } },
+                                onMore = { moreOpen = !moreOpen; moreEditing = false; evOpen = false; qualityOpen = false; formatOpen = false; proOpen = null },
+                            ) else Spacer(Modifier.height(36.dp))
                         }
                     }
                 }

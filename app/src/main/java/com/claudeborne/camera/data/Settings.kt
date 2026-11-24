@@ -136,6 +136,7 @@ object Settings {
     var wmSize by Pref("wmSize", 1) // 0 small, 1 medium, 2 large
     var wmPosition by Pref("wmPosition", 0) // 0 bottom, 1 bottom left, 2 bottom right, 3 top
 
+    var modeOrder by Pref("modeOrder", "") // the mode order chosen with the pencil in the More grid (ModeOrder); empty = stock order
     var lastPhotoUri by Pref("lastPhotoUri", "")
     var lastIsVideo by Pref("lastIsVideo", false)
 
