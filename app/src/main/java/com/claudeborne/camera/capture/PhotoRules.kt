@@ -58,8 +58,8 @@ object PhotoRules {
     }
 
     /** `IMG_20261123_154210_123.jpg`, in the same style as the stock app. */
-    fun fileName(timeMs: Long, extension: String, zone: TimeZone = TimeZone.getDefault()): String =
-        SimpleDateFormat("'IMG_'yyyyMMdd_HHmmss_SSS", Locale.US).apply { timeZone = zone }.format(Date(timeMs)) + "." + extension
+    fun fileName(timeMs: Long, extension: String, zone: TimeZone = TimeZone.getDefault(), suffix: String = ""): String =
+        SimpleDateFormat("'IMG_'yyyyMMdd_HHmmss_SSS", Locale.US).apply { timeZone = zone }.format(Date(timeMs)) + suffix + "." + extension
 
     /** The largest size whose shape is closest to the screen's, so what is saved matches what the viewfinder shows. */
     fun chooseStillSize(sizes: List<Pair<Int, Int>>, screenAspect: Float): Pair<Int, Int>? {

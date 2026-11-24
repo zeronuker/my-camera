@@ -46,6 +46,7 @@ class PhotoRulesTest {
         val utc = TimeZone.getTimeZone("UTC")
         val time = java.util.GregorianCalendar(utc).apply { clear(); set(2026, java.util.Calendar.NOVEMBER, 23, 7, 42, 10); set(java.util.Calendar.MILLISECOND, 123) }.timeInMillis
         assertEquals("IMG_20261123_074210_123.jpg", PhotoRules.fileName(time, "jpg", utc))
+        assertEquals("IMG_20261123_074210_123_REAR.jpg", PhotoRules.fileName(time, "jpg", utc, "_REAR")) // Dual Photo: one file per camera
     }
 
     @Test fun stillSizeMatchesScreenShape() {

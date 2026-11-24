@@ -131,6 +131,7 @@ class PreviewRenderer(
     private var snapHeight = 0
     private var snapTurn = 0
     private var snapMirror = false
+    private var snapSource = -1 // dual / quad view: draw only this camera (0 and up) instead of the composite
     private var snapTex = 0
     private var snapFbo = 0
     @Volatile private var freezeRequested = false
@@ -195,8 +196,8 @@ class PreviewRenderer(
     }
 
     /** One picture of the current frame as the video sees it, for the photo button while recording; null when it failed. */
-    fun snapshot(width: Int, height: Int, turn: Int, mirror: Boolean, done: (Bitmap?) -> Unit) {
-        post { snap = done; snapWidth = width; snapHeight = height; snapTurn = turn; snapMirror = mirror }
+    fun snapshot(width: Int, height: Int, turn: Int, mirror: Boolean, source: Int = -1, done: (Bitmap?) -> Unit) {
+        post { snap = done; snapWidth = width; snapHeight = height; snapTurn = turn; snapMirror = mirror; snapSource = source }
         requestRender()
     }
 
@@ -222,6 +223,9 @@ class PreviewRenderer(
     fun setSource(index: Int, sensor: Int, width: Int, height: Int) {
         extras.getOrNull(index - 1)?.let { it.sensor = sensor; it.bufW = width; it.bufH = height }
     }
+
+    /** The sensor orientation of each camera stream, source 0 first (what the JPEG turn of a photo from that camera is worked out from). */
+    fun sourceSensors(): List<Int> = listOf(sensorOrientation) + extras.map { it.sensor }
 
     /** Frames delivered per camera since the last [resetFrameCounts], source 0 first. */
     fun frameCounts(): List<Int> = listOf(mainFrames.get()) + extras.map { it.frames.get() }
@@ -497,7 +501,8 @@ class PreviewRenderer(
             GLES20.glFramebufferTexture2D(GLES20.GL_FRAMEBUFFER, GLES20.GL_COLOR_ATTACHMENT0, GLES20.GL_TEXTURE_2D, snapTex, 0)
             GLES20.glViewport(0, 0, w, h)
             val tiles = composite
-            if (tiles != null) drawComposite(tiles, w, h) else drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn), w, h)
+            if (snapSource >= 0 && tiles != null) drawSource(snapSource, snapMirror, w, h)
+            else if (tiles != null) drawComposite(tiles, w, h) else drawOes(PreviewMath.matrix(sensorOrientation, snapMirror, bufferWidth, bufferHeight, w, h, snapTurn), w, h)
             val pixels = ByteBuffer.allocateDirect(w * h * 4).order(ByteOrder.nativeOrder())
             GLES20.glReadPixels(0, 0, w, h, GLES20.GL_RGBA, GLES20.GL_UNSIGNED_BYTE, pixels)
             GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0)

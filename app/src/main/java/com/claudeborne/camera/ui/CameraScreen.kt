@@ -230,6 +230,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var pipDragging by remember { mutableStateOf(false) }
     var quadRear by remember { mutableIntStateOf(minOf(3, multiCams?.physical?.size ?: 0)) }
     var multiReady by remember { mutableStateOf(false) }
+    var dualStills by remember { mutableStateOf(true) } // Dual Photo asks for full-size photos; false for the rest of the run once the phone refuses
+    var dualBusy by remember { mutableStateOf(false) } // a Dual Photo is being taken and saved
     var quadOk by remember { mutableStateOf(true) } // Quad view drops out of the strip for this run once even 2 rear cameras and the front are too slow
     var recorderB by remember { mutableStateOf<VideoRecorder?>(null) } // Dual view with separate files: the front camera's recorder
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
@@ -449,7 +451,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
     // Dual and Quad view: the normal camera is closed and the multi-camera engine streams into the renderer's textures; a refusal always ends in a working camera
-    LaunchedEffect(permitted, resumed, texture, mode, quadRear) {
+    LaunchedEffect(permitted, resumed, texture, mode, quadRear, dualStills) {
         val st = texture
         if (!multi || !permitted || !resumed || st == null || glView == null) return@LaunchedEffect
         if (multiCams == null) { say("This phone cannot use two cameras at once"); mode = Mode.PHOTO; return@LaunchedEffect }
@@ -458,11 +460,15 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         withContext(Dispatchers.IO) { engine.close() }
         val rear = if (mode == Mode.QUAD) quadRear else 1
         renderer.makeSources(rear) { extra ->
-            multiEngine.open(rear, listOf(st) + extra, { infos, message ->
+            val stills = mode == Mode.DUALPHOTO && dualStills
+            multiEngine.open(rear, listOf(st) + extra, stills, { infos, message ->
                 scope.launch {
                     if (infos == null) {
                         val lower = if (mode == Mode.QUAD) DualRules.stepDown(quadRear) else null
-                        if (lower != null) { say("${message ?: "Not possible"}. Trying $lower rear cameras and the front."); quadRear = lower }
+                        if (stills) { // the phone cannot stream both cameras with full-size photos: open again with the screen picture size
+                            say("Full-size photos are not possible with both cameras at once. The photos use the screen picture size.")
+                            dualStills = false
+                        } else if (lower != null) { say("${message ?: "Not possible"}. Trying $lower rear cameras and the front."); quadRear = lower }
                         else { say("${message ?: "Not possible"}. The normal camera is back."); mode = Mode.PHOTO }
                     } else {
                         renderer.sensorOrientation = infos[0].sensor
@@ -476,7 +482,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         showedPicture = true
                     }
                 }
-            }, { text -> scope.launch { say("$text. The normal camera is back."); mode = Mode.PHOTO } })
+            }, { text ->
+                scope.launch {
+                    val lower = if (mode == Mode.QUAD) DualRules.stepDown(quadRear) else null
+                    if (lower != null) { say("$text. Trying $lower rear cameras and the front."); quadRear = lower }
+                    else { say("$text. The normal camera is back."); mode = Mode.PHOTO }
+                }
+            })
         }
     }
     // Quad view must stream smoothly (about 30 fps in every tile) and stay cool: watch the real frame rate of each camera and the phone heat, and step down
@@ -520,6 +532,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     val dualTarget = if (!multi) emptyList() else if (mode == Mode.QUAD) DualRules.quad(quadRear + 1, quadRear, AppSettings.mirrorSelfie)
         else DualRules.two(dualLayout, dualSwap, pip, dualOutAspect, AppSettings.mirrorSelfie)
     val dualTiles = animateTiles(dualTarget, animate = !pipDragging)
+    LaunchedEffect(dualBusy) { if (dualBusy) { delay(15000); dualBusy = false } } // never leave the shutter stuck
     LaunchedEffect(dualTiles, multi, multiReady) { renderer.composite = if (multi && multiReady) dualTiles else null; glView?.requestRender() }
     // Pro: the manual choices go to the camera; the assistants go to the picture (screen only, never into a photo or video)
     LaunchedEffect(effectivePro) { engine.setPro(effectivePro) }
@@ -1215,8 +1228,68 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
 
+    /** Saves one JPEG of Dual Photo (composite or one camera) with its file name suffix; [exif] is for the mirrored selfie. */
+    fun saveDualJpeg(bytes: ByteArray, exif: Int?, time: Long, suffix: String, last: Boolean) {
+        PhotoSaver.save(context, bytes, StillFormat.JPEG, exif, false, time, null, null, suffix) { result ->
+            result.onSuccess { uri ->
+                if (launchNow.secure) sessionShots.add(SessionShot(uri, false))
+                if (last) {
+                    AppSettings.rememberLastPhoto(uri.toString())
+                    scope.launch { thumb = withContext(Dispatchers.IO) { PhotoSaver.thumbnail(context, uri) }?.asImageBitmap() }
+                }
+            }.onFailure { say(if (it is java.io.IOException && !PhotoSaver.hasRoom()) "Storage is full" else "Could not save the photo") }
+        }
+    }
+
+    /** Dual Photo: the composite as on screen plus one photo from each camera (full size when the phone allows it), all saved in DCIM/Camera. */
+    fun dualCapture() {
+        if (!multiReady || viewSize.width == 0 || dualBusy) return
+        if (!PhotoSaver.hasRoom(60L * 1024 * 1024)) return say("Storage is full")
+        dualBusy = true
+        shutterTick++
+        if (AppSettings.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
+        val time = System.currentTimeMillis()
+        val mirror = AppSettings.mirrorSelfie
+        fun jpeg(bitmap: android.graphics.Bitmap) = java.io.ByteArrayOutputStream().also { bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, it) }.toByteArray().also { bitmap.recycle() }
+        // 1. the composite (1080 x 1920)
+        renderer.snapshot(1080, 1920, 0, false) { composite ->
+            scope.launch {
+                val bytes = composite?.let { c -> withContext(Dispatchers.IO) { jpeg(c) } }
+                if (bytes != null) saveDualJpeg(bytes, null, time, "", last = false) else say("Could not take the photo")
+                // 2. one photo from each camera: full size from the cameras' own photo streams, or the screen picture of each camera
+                val turn = if (AppSettings.photoAutoRotate) deviceDegrees else 0
+                val sensors = renderer.sourceSensors()
+                if (multiEngine.stillsActive) {
+                    val rearTurn = PhotoRules.jpegOrientation(sensors.getOrElse(0) { 90 }, turn, false)
+                    val frontTurn = PhotoRules.jpegOrientation(sensors.getOrElse(1) { 270 }, turn, true)
+                    multiEngine.captureStills(rearTurn, frontTurn) { rear, front ->
+                        scope.launch {
+                            if (rear != null) saveDualJpeg(rear, null, time + 1, "_REAR", last = false)
+                            if (front != null) saveDualJpeg(front, if (mirror) PhotoRules.exifOrientation(frontTurn, true) else null, time + 2, "_FRONT", last = true)
+                            if (rear == null && front == null) say("The full-size photos could not be taken")
+                            dualBusy = false
+                        }
+                    }
+                } else {
+                    renderer.snapshot(1080, 1440, 0, false, source = 0) { rearBitmap ->
+                        scope.launch {
+                            rearBitmap?.let { b -> saveDualJpeg(withContext(Dispatchers.IO) { jpeg(b) }, null, time + 1, "_REAR", last = false) }
+                            renderer.snapshot(1080, 1440, 0, mirror, source = 1) { frontBitmap ->
+                                scope.launch {
+                                    frontBitmap?.let { b -> saveDualJpeg(withContext(Dispatchers.IO) { jpeg(b) }, null, time + 2, "_FRONT", last = true) }
+                                    dualBusy = false
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /** Dual and Quad view: one picture of the composite exactly as it is on screen, saved as a JPEG in DCIM/Camera. */
     fun dualPhoto() {
+        if (mode == Mode.DUALPHOTO) return dualCapture()
         if (!multiReady || viewSize.width == 0) return
         shutterTick++
         if (AppSettings.shutterSound) sound.play(MediaActionSound.SHUTTER_CLICK)
@@ -1450,7 +1523,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     TiltBand(tilt, Modifier.fillMaxSize())
                 }
             }
-            if (mode == Mode.DUAL && dualLayout == Layout.PIP && multiReady) dualTiles.firstOrNull { it.border }?.let { small ->
+            if (mode.dual && dualLayout == Layout.PIP && multiReady) dualTiles.firstOrNull { it.border }?.let { small ->
                 PipHandle(
                     small, boxTop, viewSize.width, boxHeight,
                     onMove = { dx, dy -> pip = DualRules.clamp(pip.copy(cx = pip.cx + dx, cy = pip.cy + dy), dualOutAspect) },
@@ -1605,7 +1678,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
                             Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
                                 if (multi) {
-                                    if (mode == Mode.DUAL) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0)
+                                    if (mode.dual) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0)
                                 } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                     if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else if (retouchOk) LookButton(Icon.RETOUCH, retouchBase.sliders) { menu = Menu.RETOUCH; evOpen = false; proOpen = null; qualityOpen = false } else Spacer(Modifier.size(44.dp))
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->
@@ -1629,7 +1702,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 else Thumbnail(thumb, PhotoSaver.saving > 0 || savingVideo, ::openLast)
                             }
                             Box(contentAlignment = Alignment.Center) {
-                                if (multi) {
+                                if (mode == Mode.DUALPHOTO) {
+                                    Shutter(enabled = multiReady && !dualBusy && heat != Heat.TOO_HOT, running = dualBusy, onTap = ::dualCapture, onHoldStart = {}, onHoldEnd = {})
+                                } else if (multi) {
                                     RecordButton(recording, enabled = multiReady && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
                                 } else if (isVideo) {
                                     RecordButton(recording, enabled = state == CameraEngine.State.Streaming && !savingVideo && heat != Heat.TOO_HOT, onClick = ::recordTap)
@@ -1641,7 +1716,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }
                             }
-                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO) 2 else if (multi) 3 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
+                            Crossfade(if (recording) (if (normal && !recDirect) 1 else 2) else if (mode == Mode.SLOMO || mode == Mode.DUALPHOTO) 2 else if (multi) 3 else 0, animationSpec = tween(MOTION_FAST_MS), label = "right slot") { slot ->
                                 when (slot) {
                                     0 -> RoundButton(size = 52, onClick = ::flip) { CbIcon(Icon.REFRESH, Color.White, size = 26.dp) }
                                     3 -> RoundButton(size = 52, onClick = ::dualPhoto) { CbIcon(Icon.CAMERA, Color.White, size = 26.dp) }

@@ -64,6 +64,10 @@ class DualRulesTest {
         assertEquals(1280 to 960, DualRules.chooseSize(sizes, 1300 * 960, 4f / 3f))
         assertEquals(1920 to 1080, DualRules.chooseSize(listOf(1920 to 1080, 1280 to 720), 1920 * 1080, 4f / 3f)) // no 4:3: biggest that fits
         assertNull(DualRules.chooseSize(sizes, 100, 1f))
+        // full-size photos: no limit, the biggest 4:3 size
+        assertEquals(4096 to 3072, DualRules.chooseSize(sizes, Int.MAX_VALUE, 4f / 3f))
+        // Quad view streams: the small ones, about 640 x 480
+        assertEquals(640 to 480, DualRules.chooseSize(listOf(640 to 480, 1280 to 960, 1920 to 1080), 400_000, 4f / 3f))
     }
 
     @Test fun ladderAndSpeedCheck() {
