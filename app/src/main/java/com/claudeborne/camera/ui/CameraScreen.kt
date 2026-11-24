@@ -495,17 +495,20 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     // (3 rear cameras and the front, then 2 and the front, then not at all) rather than show a stuttering or hot picture
     LaunchedEffect(multiReady, mode, quadRear) {
         if (mode != Mode.QUAD || !multiReady) return@LaunchedEffect
+        delay(2000) // the cameras need a moment to settle (exposure, focus) before their speed means anything
         renderer.resetFrameCounts()
         val begin = android.os.SystemClock.elapsedRealtime()
         while (true) {
             delay(1000)
             val seconds = (android.os.SystemClock.elapsedRealtime() - begin) / 1000f
-            val slow = DualRules.tooSlow(renderer.frameCounts().take(quadRear + 1), seconds, 24f)
+            val counts = renderer.frameCounts().take(quadRear + 1)
+            val slow = DualRules.tooSlow(counts, seconds, 20f)
             val hot = heat != Heat.OK
             if (!slow && !hot) { if (seconds > 20f) break else continue } // smooth for 20 seconds: stop looking, the heat check goes on below
             if (recording) continue // never reopen the cameras under a recording
             val lower = DualRules.stepDown(quadRear)
             val why = if (hot) "The phone is getting hot" else "Quad view runs slowly here"
+            android.util.Log.w("QuadWatch", "stepping down: heat=$heat frames=$counts after ${"%.1f".format(seconds)} s, quadRear=$quadRear")
             if (lower != null) { say("$why. Showing $lower rear cameras and the front."); quadRear = lower }
             else { say("$why. Quad view is switched off."); quadOk = false; mode = Mode.PHOTO }
             return@LaunchedEffect

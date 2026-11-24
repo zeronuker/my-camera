@@ -59,7 +59,12 @@ class MultiCameraEngine(private val context: Context) {
     /** The camera ids and what they can do, or null when this phone cannot stream the rear and the front camera together. */
     class Cameras(val rear: String, val front: String, val physical: List<String>)
 
-    fun cameras(): Cameras? = try {
+    private var known: Cameras? = null
+
+    /** The camera ids, asked once and remembered (a later question that failed once ended a Quad step-down with a wrong message). */
+    fun cameras(): Cameras? = known ?: look().also { known = it }
+
+    private fun look(): Cameras? = try {
         val ids = manager.cameraIdList.toList()
         fun facing(id: String) = manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
         val rear = ids.filter { facing(it) == CameraCharacteristics.LENS_FACING_BACK }.maxByOrNull { manager.getCameraCharacteristics(it).physicalCameraIds.size }
@@ -73,7 +78,8 @@ class MultiCameraEngine(private val context: Context) {
                 Cameras(rear, front, physical)
             }
         }
-    } catch (_: Exception) {
+    } catch (e: Exception) {
+        Log.w(TAG, "looking for the cameras failed: $e")
         null
     }
 
