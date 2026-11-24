@@ -226,7 +226,7 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         row { NavRow("Watermark", if (AppSettings.wmOn) "On" else "Off") { open(SettingsPage.WATERMARK) } }
         row { NavRow("Composition assistance") { open(SettingsPage.COMPOSITION) } }
     }
-    if (refused) {
+    Visible(refused, enter = expandEnter, exit = shrinkExit) {
         BrandButton("OPEN PHONE SETTINGS", Modifier.fillMaxWidth()) {
             context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")))
         }
@@ -242,7 +242,7 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         row { NavRow("Privacy") { open(SettingsPage.PRIVACY) } }
         row { NavRow("Restore defaults") { askRestore = true } }
     }
-    if (askRestore) CbDialog("RESTORE DEFAULTS", { askRestore = false }, subtitle = "Every setting goes back to how it was at the start. Your photos are not touched.") {
+    CbDialog("RESTORE DEFAULTS", { askRestore = false }, subtitle = "Every setting goes back to how it was at the start. Your photos are not touched.", show = askRestore) {
         ActionText("RESTORE", RED) { AppSettings.restoreDefaults(); askRestore = false }
         ActionText("CANCEL", DarkCb.inkDim) { askRestore = false }
     }
@@ -318,14 +318,15 @@ private fun WatermarkPage(open: (SettingsPage) -> Unit) {
         row { NavRow("Font size", Watermark.SIZES[AppSettings.wmSize.coerceIn(0, 2)]) { open(SettingsPage.WM_SIZE) } }
         row { NavRow("Position", Watermark.POSITIONS[AppSettings.wmPosition.coerceIn(0, 3)]) { open(SettingsPage.WM_POSITION) } }
     }
-    if (editing) TextDialog("CUSTOMISED TEXT", AppSettings.wmText, { AppSettings.wmText = it.take(60); editing = false }) { editing = false }
+    TextDialog("CUSTOMISED TEXT", AppSettings.wmText, editing, { AppSettings.wmText = it.take(60); editing = false }) { editing = false }
 }
 
 /** A one-line text box in a brand dialog. */
 @Composable
-private fun TextDialog(title: String, initial: String, onSave: (String) -> Unit, onDismiss: () -> Unit) {
+private fun TextDialog(title: String, initial: String, show: Boolean, onSave: (String) -> Unit, onDismiss: () -> Unit) {
     var text by remember { mutableStateOf(initial) }
-    CbDialog(title, onDismiss, subtitle = "Up to 60 characters") {
+    androidx.compose.runtime.LaunchedEffect(show) { if (show) text = initial }
+    CbDialog(title, onDismiss, subtitle = "Up to 60 characters", show = show) {
         androidx.compose.foundation.text.BasicTextField(
             text, { text = it.take(60) }, Modifier.fillMaxWidth().background(DarkCb.surface2).padding(12.dp),
             singleLine = true, textStyle = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = DarkCb.ink),

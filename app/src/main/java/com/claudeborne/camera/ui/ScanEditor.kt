@@ -176,8 +176,8 @@ internal fun ScanEditor(
 
 /** How to save the scanned pages: one PDF, or a JPEG photo per page. */
 @Composable
-internal fun ScanSaveDialog(pages: Int, saving: Boolean, progress: Float?, onPdf: () -> Unit, onJpeg: () -> Unit, onDiscard: () -> Unit, onDismiss: () -> Unit) {
-    CbDialog("SAVE SCAN", onDismiss, subtitle = if (pages == 1) "1 page" else "$pages pages", outsideCloses = !saving) {
+internal fun ScanSaveDialog(show: Boolean, pages: Int, saving: Boolean, progress: Float?, onPdf: () -> Unit, onJpeg: () -> Unit, onDiscard: () -> Unit, onDismiss: () -> Unit) {
+    CbDialog("SAVE SCAN", onDismiss, subtitle = if (pages == 1) "1 page" else "$pages pages", outsideCloses = !saving, show = show) {
         if (saving) {
             WorkingLine("SAVING", progress)
         } else {

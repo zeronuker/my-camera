@@ -225,7 +225,7 @@ internal fun RecordTimer(ms: Long, paused: Boolean, extra: String? = null) {
     ) {
         Box(Modifier.size(10.dp).alpha(if (paused) 1f else pulse).clip(CircleShape).background(if (paused) DarkCb.inkDim else RedRecord))
         Text(VideoRules.timer(ms), style = monoStyle(Color.White, 1.sp).copy(fontSize = 15.sp))
-        if (paused) Text("PAUSED", style = monoStyle(Warn, 1.5.sp).copy(fontSize = 11.sp))
+        Visible(paused, enter = popEnter, exit = popExit) { Text("PAUSED", style = monoStyle(Warn, 1.5.sp).copy(fontSize = 11.sp)) }
         if (extra != null) Text(extra, style = monoStyle(DarkCb.mint, 1.sp).copy(fontSize = 12.sp))
     }
 }
@@ -277,8 +277,8 @@ private fun VideoMenuItem(label: String, active: Boolean, onClick: () -> Unit, i
 
 /** Asks for the microphone (video with sound needs it), or, once Android no longer asks, points to the phone's settings. */
 @Composable
-internal fun MicDialog(blocked: Boolean, onAllow: () -> Unit, onSettings: () -> Unit, onCancel: () -> Unit) {
-    CbDialog("MICROPHONE", onCancel) {
+internal fun MicDialog(show: Boolean, blocked: Boolean, onAllow: () -> Unit, onSettings: () -> Unit, onCancel: () -> Unit) {
+    CbDialog("MICROPHONE", onCancel, show = show) {
         Text("Video needs the microphone to record sound. Nothing leaves your phone.", style = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = DarkCb.ink2))
         if (blocked) {
             Text("Microphone access is blocked. Open the app's settings, choose Permissions, then Microphone, and allow it.", style = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = Warn))

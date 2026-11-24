@@ -146,11 +146,14 @@ internal fun Modifier.doubleChamferFrame(cb: CbColors, fill: Color? = null) = dr
 
 /** Brand dialog: chamfered double-border card over a dimmed screen. */
 @Composable
-internal fun CbDialog(title: String, onDismiss: () -> Unit, subtitle: String? = null, outsideCloses: Boolean = true, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun CbDialog(title: String, onDismiss: () -> Unit, subtitle: String? = null, outsideCloses: Boolean = true, show: Boolean = true, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    // [show] false animates the card out before the dialog leaves the composition (callers that keep calling it with show = false)
+    val shown = remember { androidx.compose.animation.core.MutableTransitionState(false) }
+    shown.targetState = show
+    if (!show && !shown.currentState) return
     androidx.compose.ui.window.Dialog(onDismiss, androidx.compose.ui.window.DialogProperties(usePlatformDefaultWidth = false)) {
-        val shown = remember { androidx.compose.animation.core.MutableTransitionState(false).apply { targetState = true } }
         Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, null) { if (outsideCloses) onDismiss() }, Alignment.Center) {
-            androidx.compose.animation.AnimatedVisibility(shown, enter = popEnter) {
+            androidx.compose.animation.AnimatedVisibility(shown, enter = popEnter, exit = popExit) {
                 androidx.compose.runtime.CompositionLocalProvider(LocalInDialog provides true) {
                     androidx.compose.foundation.layout.Column(
                         Modifier.padding(horizontal = 24.dp).fillMaxWidth().clickable(remember { MutableInteractionSource() }, null) {}

@@ -135,8 +135,8 @@ internal suspend fun PointerInputScope.cameraGestures(
 internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Unit, onEv: () -> Unit, modifier: Modifier = Modifier, showFlash: Boolean = true, live: Boolean? = null, onLive: () -> Unit = {}) {
     Row(modifier.height(44.dp).chrome(), verticalAlignment = Alignment.CenterVertically) {
         if (showFlash) Box(Modifier.size(44.dp).clickable(onClick = onFlash), Alignment.Center) {
-            CbIcon(if (flash == Flash.OFF) Icon.FLASH_OFF else Icon.FLASH, glide(flash == Flash.TORCH, DarkCb.mint, Color.White), filled = flash == Flash.ON || flash == Flash.TORCH, size = 22.dp)
-            if (flash == Flash.AUTO) Text("A", Modifier.align(Alignment.BottomEnd).padding(end = 7.dp, bottom = 5.dp), style = monoStyle(Color.White, 0.sp).copy(fontSize = 10.sp))
+            androidx.compose.animation.Crossfade(flash, animationSpec = tween(MOTION_FAST_MS), label = "flash icon") { f -> CbIcon(if (f == Flash.OFF) Icon.FLASH_OFF else Icon.FLASH, glide(f == Flash.TORCH, DarkCb.mint, Color.White), filled = f == Flash.ON || f == Flash.TORCH, size = 22.dp) }
+            Visible(flash == Flash.AUTO, Modifier.align(Alignment.BottomEnd).padding(end = 7.dp, bottom = 5.dp), enter = popEnter, exit = popExit) { Text("A", style = monoStyle(Color.White, 0.sp).copy(fontSize = 10.sp)) }
         }
         // Live photo switch, shown only where the camera can do it (Photo, rear)
         Visible(live != null, enter = popEnter, exit = popExit) {
@@ -184,7 +184,7 @@ internal fun FocusBox(center: Offset, tick: Int, focus: CameraEngine.Focus, lock
                 CbIcon(Icon.SUN, if (ev != 0f) DarkCb.mint else Color.White, size = 18.dp)
             }
         }
-        if (locked) Text("AE/AF LOCK", Modifier.align(Alignment.BottomCenter).offset(y = 22.dp), style = monoStyle(DarkCb.mint, 1.sp).copy(fontSize = 10.sp))
+        Visible(locked, Modifier.align(Alignment.BottomCenter).offset(y = 22.dp), enter = popEnter, exit = popExit) { Text("AE/AF LOCK", style = monoStyle(DarkCb.mint, 1.sp).copy(fontSize = 10.sp)) }
     }
 }
 

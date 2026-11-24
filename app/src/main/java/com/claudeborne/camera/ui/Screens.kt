@@ -62,7 +62,15 @@ fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.L
     BackHandler(screen == Screen.SETTINGS || screen == Screen.ABOUT || screen == Screen.DIAGNOSTICS) {
         screen = when (screen) { Screen.DIAGNOSTICS -> Screen.ABOUT; Screen.ABOUT -> Screen.SETTINGS; else -> Screen.CAMERA }
     }
-    AnimatedContent(screen, transitionSpec = { fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "screen") { s ->
+    AnimatedContent(
+        screen,
+        transitionSpec = {
+            // going deeper (camera > settings > about > diagnostics) pushes in from the right; coming back, and the splash, fade
+            if (initialState != Screen.SPLASH && targetState.ordinal > initialState.ordinal) pushEnter togetherWith fadeOut(tween(MOTION_FAST_MS))
+            else fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS))
+        },
+        label = "screen",
+    ) { s ->
         when (s) {
             Screen.SPLASH -> Box(Modifier.fillMaxSize().background(DarkCb.surface0), Alignment.Center) {
                 SystemBarIcons(darkIcons = false)
@@ -111,13 +119,13 @@ private fun AboutScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) = Page("A
     BrandButton("CHECK FOR UPDATES", Modifier.fillMaxWidth(), primary = true, enabled = Updater.state !is Updater.State.Checking && Updater.state !is Updater.State.Downloading) {
         Updater.check(context, manual = true)
     }
-    when (val s = Updater.state) {
+    androidx.compose.animation.AnimatedContent(Updater.state::class, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "update status") { _ -> when (val s = Updater.state) {
         Updater.State.Checking -> WorkingLine("CHECKING…", color = cb.mint)
         Updater.State.UpToDate -> Body("You have the newest version.")
         is Updater.State.Failed -> Body("Could not check: ${s.reason}", Warn)
         is Updater.State.Downloading -> WorkingLine("DOWNLOADING… ${(s.progress * 100).toInt()}%", s.progress, cb.mint)
         else -> Unit
-    }
+    } }
     BrandButton("DIAGNOSTICS", Modifier.fillMaxWidth(), onClick = onDiagnostics)
 }
 
@@ -152,13 +160,15 @@ private fun DiagnosticsScreen(onBack: () -> Unit) = Page("DIAGNOSTICS", onBack) 
     BrandButton("RUN PROBE", Modifier.fillMaxWidth(), primary = true, enabled = working == null) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) run(true) else askCamera.launch(Manifest.permission.CAMERA)
     }
-    working?.let { WorkingLine(it, color = cb.mint) }
-    problem?.let { Body("Probe failed: $it", Warn) }
-    report?.let { r ->
-        Card { r.lines.forEach { Text(it, style = TextStyle(fontFamily = JetBrainsMono, fontSize = 11.sp, color = cb.ink2)) } }
-        saved?.let { f ->
-            Body("Saved to Download/camera-probe.json.", cb.mint)
-            BrandButton("SHARE REPORT", Modifier.fillMaxWidth()) { share(context, f, "application/json") }
+    AnimatedOverlay(working, enter = expandEnter, exit = shrinkExit) { WorkingLine(it, color = cb.mint) }
+    AnimatedOverlay(problem, enter = expandEnter, exit = shrinkExit) { Body("Probe failed: $it", Warn) }
+    AnimatedOverlay(report, enter = expandEnter, exit = shrinkExit) { r ->
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Card { r.lines.forEach { Text(it, style = TextStyle(fontFamily = JetBrainsMono, fontSize = 11.sp, color = cb.ink2)) } }
+            saved?.let { f ->
+                Body("Saved to Download/camera-probe.json.", cb.mint)
+                BrandButton("SHARE REPORT", Modifier.fillMaxWidth()) { share(context, f, "application/json") }
+            }
         }
     }
 

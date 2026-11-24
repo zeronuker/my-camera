@@ -1554,18 +1554,18 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     onDrag = { pipDragging = it }, onTap = { dualSwap = !dualSwap },
                 )
             }
-            focusPoint?.let { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
+            AnimatedOverlay(focusPoint, enter = popEnter, exit = popExit) { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
-                if (!multi) TopPill(
+                Visible(!multi, Modifier.align(Alignment.TopStart).padding(16.dp), enter = popEnter, exit = popExit) { TopPill(
                     flash, ev, evOpen, ::cycleFlash,
                     { if (manualExposure) say("EV is off while ISO and shutter are set by hand") else { evOpen = !evOpen; menu = Menu.NONE; qualityOpen = false; formatOpen = false; proOpen = null } },
-                    Modifier.align(Alignment.TopStart).padding(16.dp), showFlash = !(isVideo && front),
+                    Modifier, showFlash = !(isVideo && front),
                     live = AppSettings.livePhoto.takeIf { mode == Mode.PHOTO && !front && !launch.secure },
                     onLive = { AppSettings.livePhoto = !AppSettings.livePhoto; say("Live photo: ${if (AppSettings.livePhoto) "On" else "Off"}") },
-                )
+                ) }
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
-                if (!multi) Row(Modifier.align(Alignment.TopEnd).padding(16.dp), Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
+                Visible(!multi, Modifier.align(Alignment.TopEnd).padding(16.dp), enter = popEnter, exit = popExit) { Row(Modifier, Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
                     Visible(portraitOwnNow && !readingText, enter = popEnter, exit = popExit) {
                         QualityPill(PortraitRules.label(AppSettings.portraitF), qualityOpen) { qualityOpen = !qualityOpen; menu = Menu.NONE; evOpen = false }
                     }
@@ -1589,7 +1589,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     RoundButton(onClick = { menu = if (menu == Menu.NONE) Menu.MAIN else Menu.NONE; moreOpen = false; moreEditing = false; evOpen = false; qualityOpen = false; formatOpen = false; proOpen = null }) {
                         CbIcon(Icon.SIX_DOT, if (menu != Menu.NONE) DarkCb.mint else Color.White, size = 24.dp)
                     }
-                }
+                } }
                 Column(Modifier.align(Alignment.TopCenter).padding(top = 74.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Visible(recording, enter = popEnter, exit = popExit) {
                         val extra = if (mode == Mode.TIMELAPSE) "CLIP " + VideoRules.timer((TimeLapse.clipSeconds(recMs / 1000, AppSettings.lapseSpeed) * 1000).toLong()) else null
@@ -1704,7 +1704,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             }
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
                             Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
-                                if (multi) {
+                                Crossfade(multi, animationSpec = tween(MOTION_FAST_MS), label = "bottom row") { multiNow -> if (multiNow) {
                                     if (mode.dual) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0, quadNote)
                                 } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                     if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else if (retouchOk) LookButton(Icon.RETOUCH, retouchBase.sliders) { menu = Menu.RETOUCH; evOpen = false; proOpen = null; qualityOpen = false } else Spacer(Modifier.size(44.dp))
@@ -1719,7 +1719,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                         lookFilterOk -> LookButton(Icon.FILTER, AppSettings.filter > 0) { menu = Menu.FILTERS; evOpen = false; proOpen = null; qualityOpen = false }
                                         else -> Spacer(Modifier.size(44.dp))
                                     }
-                                }
+                                } }
                             }
                         }
                         Row(Modifier.fillMaxWidth().padding(horizontal = 32.dp), Arrangement.SpaceBetween, Alignment.CenterVertically) {
@@ -1770,17 +1770,20 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         }
                     }
                 }
+                val menuHolder = remember { arrayOf(Menu.MAIN) } // the open menu is kept while it fades out, so the panel does not turn into the 6-dot menu
+                if (menu != Menu.NONE) menuHolder[0] = menu
+                val menuShown = menuHolder[0]
                 Visible(menu != Menu.NONE, Modifier.align(Alignment.BottomCenter), enter = popEnter, exit = popExit) {
-                    if (menu == Menu.FILTERS) Box(Modifier.padding(bottom = 16.dp)) {
+                    if (menuShown == Menu.FILTERS) Box(Modifier.padding(bottom = 16.dp)) {
                         FilterPanel(AppSettings.filter) { AppSettings.filter = it; say(com.claudeborne.camera.look.Filters.all[it].name) }
-                    } else if (menu == Menu.RETOUCH) Box(Modifier.padding(bottom = 16.dp)) {
+                    } else if (menuShown == Menu.RETOUCH) Box(Modifier.padding(bottom = 16.dp)) {
                         RetouchPanel(retouchBase) { AppSettings.retouch = com.claudeborne.camera.face.RetouchStore.encode(it); glView?.requestRender() }
-                    } else if (menu == Menu.STYLES) Box(Modifier.padding(bottom = 16.dp)) {
+                    } else if (menuShown == Menu.STYLES) Box(Modifier.padding(bottom = 16.dp)) {
                         StylesPanel(onChange = { glView?.requestRender() })
-                    } else if (menu == Menu.SCENES) Box(Modifier.padding(bottom = 16.dp)) {
+                    } else if (menuShown == Menu.SCENES) Box(Modifier.padding(bottom = 16.dp)) {
                         ScenesPanel(AppSettings.scene) { AppSettings.scene = it; menu = Menu.NONE; say("Scene: ${Scene.all[it].name}") }
                     } else if (isVideo) VideoMenuPanel(
-                        menu, showHdr = plainVideo && hdrChoices.isNotEmpty() && picked?.highSpeed != true && !recording, hdr = AppSettings.videoHdr,
+                        menuShown, showHdr = plainVideo && hdrChoices.isNotEmpty() && picked?.highSpeed != true && !recording, hdr = AppSettings.videoHdr,
                         showSteady = caps?.previewStabilisation == true && picked?.highSpeed != true && !recording, steady = AppSettings.ultraSteady, focusHeld = focusHeld,
                         onPage = { menu = it },
                         onHdr = { v -> AppSettings.videoHdr = v; menu = Menu.NONE; say(if (v == 0) "10-bit HDR: Off" else "10-bit HDR: ${Hdr.entries[v - 1].label}") },
@@ -1790,7 +1793,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                         hdrChoices = listOf("Off" to 0) + hdrChoices,
                         modifier = Modifier.padding(bottom = 16.dp), showSettings = !launch.secure,
                     ) else MenuPanel(
-                        menu, aspect, timerSec, intervalSec,
+                        menuShown, aspect, timerSec, intervalSec,
                         onPage = { menu = it },
                         onAspect = { aspect = it; menu = Menu.NONE; say("Aspect ratio: ${it.label}") },
                         onTimer = { timerSec = it; menu = Menu.NONE; say(if (it == 0) "Timer: Off" else "Timer: $it s") },
@@ -1827,7 +1830,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 }
                 ScanEditor(draft, scanBusy, scanPages.size + 1, onRetake = { scanDraft = null }, onAdd = { q, h -> keep(q, h, false) }, onDone = { q, h -> keep(q, h, true) })
             }
-            if (scanSaveOpen) ScanSaveDialog(
+            ScanSaveDialog(
+                scanSaveOpen,
                 scanPages.size, scanSaving != null, scanSaving,
                 onPdf = {
                     scanSaving = 0f
@@ -1869,13 +1873,13 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             Visible(viewerOpen, Modifier.fillMaxSize(), enter = overlayEnter, exit = overlayExit) {
                 SessionViewer(sessionShots.toList()) { viewerOpen = false }
             }
-            micAsk?.let { blocked ->
-                MicDialog(
-                    blocked, onAllow = { askMic.launch(Manifest.permission.RECORD_AUDIO) },
-                    onSettings = { micAsk = null; context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) },
-                    onCancel = { micAsk = null },
-                )
-            }
+            var micBlocked by remember { mutableStateOf(false) } // kept while the dialog fades out
+            micAsk?.let { micBlocked = it }
+            MicDialog(
+                micAsk != null, micBlocked, onAllow = { askMic.launch(Manifest.permission.RECORD_AUDIO) },
+                onSettings = { micAsk = null; context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) },
+                onCancel = { micAsk = null },
+            )
         } else {
             PermissionScreen(refused, context) { askCamera.launch(Manifest.permission.CAMERA) }
         }
