@@ -303,6 +303,15 @@ Probe result: OnePlus exposes only NIGHT (rear + front) and BOKEH (rear). Extens
 - Preserve settings (all 11 switches) wired end to end; Restore defaults; Privacy page; mode-strip reorder (pencil in More).
 - Performance: time-to-first-frame from launch and from lock screen; shutter lag; memory during bursts.
 
+**Built in Phase 10 (facts learned, details in the hand-over note):**
+- **Chrome style**: the picture is a GLSurfaceView, which a Compose graphics layer cannot blur, so frosted glass over the viewfinder is not possible without a second preview path. All floating pills, round buttons and panels now share one tint and one faint rim (`Modifier.chrome()` in `ui/Glass.kt`). The top-left pill holds flash, Live (Photo, rear) and EV, as the stock one. `GlassPill`/`glassSource` stay in `Glass.kt` for surfaces over Compose content.
+- **More grid**: the strip shows the first five modes of the saved order (default MASTER · VIDEO · PHOTO · PORTRAIT · TEXT) plus MORE; the rest are in a four-column grid above the strip. The chosen mode's name takes MORE's place. The pencil turns on edit mode: every mode shows with arrows that move it one place; the first five are the strip. Order is the `modeOrder` setting (`ui/ModeOrder.kt`, tested). Names that run off the strip fade out at the ends. Icons in the grid reuse existing icons (no bespoke ones yet).
+- **Preserve settings** (`data/Preserve.kt`, `Keep`): all 11 switches, stock defaults (on: Creative effects, Exposure setting, Motion Photo, AI Telescope Zoom, Pro assistance; off: Shooting mode, Styles & effects, Auto macro, Portrait mode zooming, Metering, Photo formats). Everything is saved as before; a switch that is off puts its settings back to their defaults at every start (`Settings.init`). New remembered values: `lastMode`, `evSaved` (EV), `portraitZoom`. **Restore defaults** (confirm dialog) resets every setting except the last-picture thumbnail. **Privacy** is a plain-words page.
+- **Animation audit**: dialogs now fade out as well as in (`CbDialog(show = ...)`); Settings, About and Diagnostics push in from the right; the open panel keeps its content while it fades out (it used to turn into the 6-dot menu); the top-left and top-right chrome fade when Dual/Triple modes hide them; the bottom row crossfades between Dual layout bar and lens pills; flash icon crossfades; focus box, AE/AF LOCK, PAUSED, Diagnostics lines and the About update status fade. Still instant on purpose: the shutter blink and front screen flash (capture feedback), anything that follows a finger, the Permission screen swapping to the viewfinder (once ever).
+- **Launch**: the camera now opens at once under the splash (it used to wait 700 ms for the splash first); the splash fades on the first live frame (or after 1.5 s). The window and system splash background is always dark (no light flash on a light-theme phone). `Perf` log (tag `Perf`): first frame since launch intent and process start, shutter lag (press to photo), save time, heap and photos waiting.
+- **Bursts**: a burst waits while 4 photos are still being saved (`PhotoSaver.MAX_WAITING`), so photos with a look or watermark cannot pile up in memory. Emulator burst with Mono + watermark: 4 photos waiting at most, java heap 30-50 MB.
+- Emulator numbers (software GL, fake camera; not the phone): cold start to first frame about 6.7 s, single shutter lag about 1.2 s, look save about 3-4 s per photo. **Real numbers need the phone** (`adb logcat -s Perf`).
+
 ### Phase 11 — Plus Key double-press launch (optional, planned 2026-11-23, build after Phase 10)
 
 Goal: double-press the OnePlus 15 Plus Key (the action button) to open this camera, also from the lock screen, with no second app. The power key and the volume keys are not possible (OxygenOS owns the power double-press; Android never gives key presses to apps with the screen off). Accessibility services are avoided on purpose: many banking apps refuse to run while an unknown one is on.
@@ -327,8 +336,8 @@ Risks: the log line may not exist or may not appear with the screen off; OxygenO
 | Portrait | Aspect ratio, Soft light, Timer, Interval shooting, Settings |
 | Text | Aspect ratio, Settings |
 
-Modes on the strip: MASTER · VIDEO · PHOTO · PORTRAIT · TEXT · MORE.
-More grid (`06-more-modes-grid.jpg`): Night, Pano, Pro Video, Slo-mo, Time-lapse, Long exposure, Dual-view video, Underwater, Scan Docs, Tilt-shift, Quad view. (Stock Hi-Res: NO, see Phase 7.) Pencil = reorder.
+Modes on the strip: MASTER · VIDEO · PHOTO · PORTRAIT · TEXT · MORE (built in Phase 10).
+More grid (`06-more-modes-grid.jpg`): Night, Pano, Pro Video, Slo-mo, Time-lapse, Long exposure, Dual photo, Dual video, Underwater, Scan Docs, Tilt-shift, Triple view. (Stock Hi-Res: NO, see Phase 7.) Pencil = reorder.
 
 ## Settings — from the stock app (plus ours)
 
