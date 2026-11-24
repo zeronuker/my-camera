@@ -232,6 +232,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var multiReady by remember { mutableStateOf(false) }
     var dualStills by remember { mutableStateOf(true) } // Dual Photo asks for full-size photos; false for the rest of the run once the phone refuses
     var dualBusy by remember { mutableStateOf(false) } // a Dual Photo is being taken and saved
+    var quadNote by remember { mutableStateOf<String?>(null) } // why Quad view shows fewer cameras than the four it tries first, kept on screen
     var quadOk by remember { mutableStateOf(true) } // Quad view drops out of the strip for this run once even 2 rear cameras and the front are too slow
     var recorderB by remember { mutableStateOf<VideoRecorder?>(null) } // Dual view with separate files: the front camera's recorder
     var collect by remember { mutableStateOf<((CameraEngine.Photo) -> Unit)?>(null) } // a multi-picture feature takes the next photos instead of the saver
@@ -465,6 +466,9 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                 scope.launch {
                     if (infos == null) {
                         val lower = if (mode == Mode.QUAD) DualRules.stepDown(quadRear) else null
+                        val restarted = message == "The camera service restarted"
+                        if (mode == Mode.QUAD) quadNote = if (restarted) "CAMERA SERVICE RESTARTED" else "CAMERA REFUSED"
+                        if (restarted && mode == Mode.QUAD) delay(6000) // the phone needs a few seconds to bring its cameras back before they can be opened again
                         if (stills) { // the phone cannot stream both cameras with full-size photos: open again with the screen picture size
                             say("Full-size photos are not possible with both cameras at once. The photos use the screen picture size.")
                             dualStills = false
@@ -485,12 +489,15 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             }, { text ->
                 scope.launch {
                     val lower = if (mode == Mode.QUAD) DualRules.stepDown(quadRear) else null
+                    if (mode == Mode.QUAD) { quadNote = "CAMERA LOST"; delay(4000) }
                     if (lower != null) { say("$text. Trying $lower rear cameras and the front."); quadRear = lower }
                     else { say("$text. The normal camera is back."); mode = Mode.PHOTO }
                 }
             })
         }
     }
+    // leaving Quad view: next time it tries all the cameras again, with no old reason on screen
+    LaunchedEffect(mode) { if (mode != Mode.QUAD) { quadRear = minOf(3, multiCams?.physical?.size ?: 0); quadNote = null } }
     // Quad view must stream smoothly (about 30 fps in every tile) and stay cool: watch the real frame rate of each camera and the phone heat, and step down
     // (3 rear cameras and the front, then 2 and the front, then not at all) rather than show a stuttering or hot picture
     LaunchedEffect(multiReady, mode, quadRear) {
@@ -509,6 +516,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
             val lower = DualRules.stepDown(quadRear)
             val why = if (hot) "The phone is getting hot" else "Quad view runs slowly here"
             android.util.Log.w("QuadWatch", "stepping down: heat=$heat frames=$counts after ${"%.1f".format(seconds)} s, quadRear=$quadRear")
+            quadNote = if (hot) "PHONE HOT" else "TOO SLOW"
             if (lower != null) { say("$why. Showing $lower rear cameras and the front."); quadRear = lower }
             else { say("$why. Quad view is switched off."); quadOk = false; mode = Mode.PHOTO }
             return@LaunchedEffect
@@ -1681,7 +1689,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                             Visible(!evOpen && pinching && proOpen == null, enter = popEnter, exit = popExit) { ZoomRuler(zoom, zoomMin, zoomMax, stops) }
                             Visible(!evOpen && !pinching && proOpen == null, Modifier.fillMaxWidth().padding(horizontal = 16.dp), enter = popEnter, exit = popExit) {
                                 if (multi) {
-                                    if (mode.dual) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0)
+                                    if (mode.dual) DualBar(dualLayout, { dualLayout = it; AppSettings.dualLayout = it.ordinal }, { dualSwap = !dualSwap }, enabled = multiReady) else QuadLabel(if (multiReady) quadRear else 0, quadNote)
                                 } else Row(Modifier.fillMaxWidth(), Arrangement.SpaceBetween, Alignment.CenterVertically) {
                                     if (isMaster) ProSwitch(AppSettings.proOn, { AppSettings.proOn = it; say(if (it) "Pro" else "Auto") }) else if (retouchOk) LookButton(Icon.RETOUCH, retouchBase.sliders) { menu = Menu.RETOUCH; evOpen = false; proOpen = null; qualityOpen = false } else Spacer(Modifier.size(44.dp))
                                     if (facing == Facing.BACK) LensPills(zoom, stops) { pill ->

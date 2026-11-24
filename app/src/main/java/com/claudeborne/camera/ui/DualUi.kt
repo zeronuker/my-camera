@@ -91,9 +91,9 @@ internal fun DualBar(layout: Layout, onLayout: (Layout) -> Unit, onSwap: () -> U
 
 /** A small label over the picture in Quad view: how many rear cameras are really streaming. */
 @Composable
-internal fun QuadLabel(rear: Int) {
+internal fun QuadLabel(rear: Int, note: String? = null) {
     Text(
-        "$rear REAR + FRONT", Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.42f)).padding(horizontal = 14.dp, vertical = 8.dp),
+        "$rear REAR + FRONT" + (note?.let { " · $it" } ?: ""),Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.42f)).padding(horizontal = 14.dp, vertical = 8.dp),
         style = monoStyle(DarkCb.mint, 1.5.sp).copy(fontSize = 12.sp),
     )
 }
