@@ -55,11 +55,11 @@ import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, WATERMARK, WM_TARGET, WM_POSITION, COMPOSITION, GRID, SCANNING }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
-private val ADAPTIVE = listOf("Off", "For 30 fps videos", "For 30 fps and 60 fps videos")
+private val ADAPTIVE = listOf("Off", "30 fps", "30 and 60 fps")
 
 /**
  * Settings as in the stock app: General / Photo / Video tabs of grouped cards, with sub-pages for the choices. Only rows for features
@@ -97,9 +97,8 @@ fun SettingsScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) {
                 Group(footer = "Keep the shutter pressed to take photos one after another until you let go.") {
                     row { SwitchRow("Take burst photos", AppSettings.holdForBurst, { AppSettings.holdForBurst = it }) }
                 }
-                Group("Burst mode", "Clear waits for the focus before every frame: sharper frames, a slower burst. Classic is as fast as the camera goes.") {
-                    row { RadioRow("Classic", !AppSettings.burstClear, { AppSettings.burstClear = false }) }
-                    row { RadioRow("Clear", AppSettings.burstClear, { AppSettings.burstClear = true }) }
+                Group(footer = "Clear waits for the focus before every frame: sharper frames, a slower burst. Classic is as fast as the camera goes.") {
+                    row { ChoiceRow("Burst mode", listOf("Classic", "Clear"), if (AppSettings.burstClear) 1 else 0) { AppSettings.burstClear = it == 1 } }
                 }
             }
             SettingsPage.METHODS -> Page("SHOOTING METHODS", up) {
@@ -122,36 +121,11 @@ fun SettingsScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) {
                     }
                 }
             }
-            SettingsPage.VOLUME -> Page("VOLUME BUTTON ACTION", up) {
-                Group {
-                    VOLUME_ACTIONS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.volumeAction == i, { AppSettings.volumeAction = i }) } }
-                }
-            }
-            SettingsPage.ADAPTIVE -> Page("ADAPTIVE FRAME RATE", up) {
-                Group(footer = "In dim light the camera may slow down to get brighter pictures. The video file keeps the right speed.") {
-                    ADAPTIVE.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.adaptiveFps == i, { AppSettings.adaptiveFps = i }) } }
-                }
-            }
-            SettingsPage.BITRATE -> Page("BITRATE", up) {
-                Group(footer = "High quality uses more storage for a sharper picture: about 30 megabits a second for 4K at 30 fps with HEVC, 19 for Standard.") {
-                    row { RadioRow("Standard", !AppSettings.bitrateHigh, { AppSettings.bitrateHigh = false }) }
-                    row { RadioRow("High quality", AppSettings.bitrateHigh, { AppSettings.bitrateHigh = true }) }
-                }
-            }
-            SettingsPage.DUAL_REC -> Page("DUAL-VIEW RECORDING", up) {
-                Group(footer = "Combined: one video of the whole picture, as you see it. Separate files: one video of the rear camera and one of the front camera, recorded together.") {
-                    row { RadioRow("Combined", !AppSettings.dualSeparate, { AppSettings.dualSeparate = false }) }
-                    row { RadioRow("Separate files", AppSettings.dualSeparate, { AppSettings.dualSeparate = true }) }
-                }
-            }
             SettingsPage.WATERMARK -> Page("WATERMARK", up) { WatermarkPage { page = it } }
             SettingsPage.WM_TARGET -> Page("ADD WATERMARK TO", { page = SettingsPage.WATERMARK }) {
                 Group(footer = "Not in slow motion (120 and 240 fps): the camera writes those videos straight to the file.") {
                     Watermark.TARGETS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmTarget == i, { AppSettings.wmTarget = i }) } }
                 }
-            }
-            SettingsPage.WM_SIZE -> Page("FONT SIZE", { page = SettingsPage.WATERMARK }) {
-                Group { Watermark.SIZES.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmSize == i, { AppSettings.wmSize = i }) } } }
             }
             SettingsPage.WM_POSITION -> Page("POSITION", { page = SettingsPage.WATERMARK }) {
                 Group { Watermark.POSITIONS.forEachIndexed { i, name -> row { RadioRow(name, AppSettings.wmPosition == i, { AppSettings.wmPosition = i }) } } }
@@ -171,12 +145,6 @@ fun SettingsScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) {
                 }
                 Group(footer = "In Photo mode, suggests Text mode when text fills the frame.") {
                     row { SwitchRow("Recommend Text Scanner", AppSettings.recommendText, { AppSettings.recommendText = it }) }
-                }
-            }
-            SettingsPage.ORIENTATION -> Page("PHOTO ORIENTATION", up) {
-                Group(footer = "The screen always stays upright; this decides how the saved photo or video is turned.") {
-                    row { RadioRow("Follow system", !AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = false }, "Photos and videos are saved upright for the screen.") }
-                    row { RadioRow("Auto-rotate", AppSettings.photoAutoRotate, { AppSettings.photoAutoRotate = true }, "Photos and videos turn with the way you hold the phone.") }
                 }
             }
         }
@@ -220,8 +188,8 @@ private fun GeneralTab(open: (SettingsPage) -> Unit) {
         }
     }
     Group("Handy features") {
-        row { NavRow("Volume button action", VOLUME_ACTIONS[AppSettings.volumeAction.coerceIn(0, 2)]) { open(SettingsPage.VOLUME) } }
-        row { NavRow("Photo orientation", ORIENTATIONS[if (AppSettings.photoAutoRotate) 1 else 0]) { open(SettingsPage.ORIENTATION) } }
+        row { ChoiceRow("Volume button action", VOLUME_ACTIONS, AppSettings.volumeAction.coerceIn(0, 2)) { AppSettings.volumeAction = it } }
+        row { ChoiceRow("Photo orientation", ORIENTATIONS, if (AppSettings.photoAutoRotate) 1 else 0) { AppSettings.photoAutoRotate = it == 1 } }
         row { SwitchRow("Smart suggestions", AppSettings.smartSuggestions, { AppSettings.smartSuggestions = it }, "Short hints such as trying Text mode when a page of text is in view.") }
     }
 }
@@ -288,8 +256,8 @@ private fun AboutTab(onDiagnostics: () -> Unit) {
 private fun SettingsInfoRow(label: String, value: String) {
     val cb = LocalCb.current
     androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceBetween) {
-        Text(label, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.ink))
-        Text(value, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.inkDim))
+        Text(label.uppercase(), style = monoStyle(cb.ink, 1.5.sp).copy(fontSize = 12.sp))
+        Text(value.uppercase(), style = monoStyle(cb.inkDim, 1.sp))
     }
 }
 
@@ -297,7 +265,7 @@ private fun SettingsInfoRow(label: String, value: String) {
 private fun PrivacyLine(title: String, text: String) {
     val cb = LocalCb.current
     Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-        Text(title, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.ink))
+        Text(title.uppercase(), style = monoStyle(cb.ink, 1.5.sp).copy(fontSize = 12.sp))
         Text(text, style = TextStyle(fontFamily = Inter, fontSize = 13.sp, color = cb.inkDim, lineHeight = 18.sp))
     }
 }
@@ -305,12 +273,12 @@ private fun PrivacyLine(title: String, text: String) {
 @Composable
 private fun VideoTab(open: (SettingsPage) -> Unit) {
     val dualOk = com.claudeborne.camera.camera.Extensions.dualViewAvailable(LocalContext.current)
-    Group(footer = "Videos are recorded with the sound of the microphone (not in slo-mo and time-lapse) and saved in DCIM/Camera.") {
+    Group(footer = "Adaptive frame rate: in dim light the camera may slow down to get brighter pictures; the file keeps the right speed. Videos are recorded with the sound of the microphone (not in slo-mo and time-lapse) and saved in DCIM/Camera.") {
         row { SwitchRow("Lock lens", AppSettings.lockLens, { AppSettings.lockLens = it }, "Do not automatically change lenses while recording videos.") }
         row { SwitchRow("Lock white balance", AppSettings.lockWb, { AppSettings.lockWb = it }, "Do not automatically adjust white balance while recording videos.") }
-        row { NavRow("Adaptive frame rate", ADAPTIVE[AppSettings.adaptiveFps.coerceIn(0, 2)]) { open(SettingsPage.ADAPTIVE) } }
-        row { NavRow("Bitrate", if (AppSettings.bitrateHigh) "High quality" else "Standard") { open(SettingsPage.BITRATE) } }
-        if (dualOk) row { NavRow("Dual-view recording", if (AppSettings.dualSeparate) "Separate files" else "Combined") { open(SettingsPage.DUAL_REC) } }
+        row { ChoiceRow("Adaptive frame rate", ADAPTIVE, AppSettings.adaptiveFps.coerceIn(0, 2)) { AppSettings.adaptiveFps = it } }
+        row { ChoiceRow("Bitrate", listOf("Standard", "High quality"), if (AppSettings.bitrateHigh) 1 else 0) { AppSettings.bitrateHigh = it == 1 } }
+        if (dualOk) row { ChoiceRow("Dual-view recording", listOf("Combined", "Separate files"), if (AppSettings.dualSeparate) 1 else 0) { AppSettings.dualSeparate = it == 1 } }
         row { SwitchRow("Depth of field (test)", AppSettings.videoDof, { AppSettings.videoDof = it }, "Blurs the background behind a person while you film, in the preview and in the file. Rear camera, normal video (not 120 or 240 fps). The person is found 8 times a second, so quick movements lag a little.") }
         row { SwitchRow("Motion Photo", AppSettings.videoMotion, { AppSettings.videoMotion = it }, "A photo taken while recording also saves a short moving clip around it. Rear camera, portrait videos at 30 or 60 fps, not 10-bit HDR.") }
     }
@@ -360,7 +328,7 @@ private fun WatermarkPage(open: (SettingsPage) -> Unit) {
         row { NavRow("Customised text", AppSettings.wmText.ifBlank { "None" }) { editing = true } }
     }
     Group {
-        row { NavRow("Font size", Watermark.SIZES[AppSettings.wmSize.coerceIn(0, 2)]) { open(SettingsPage.WM_SIZE) } }
+        row { ChoiceRow("Font size", Watermark.SIZES, AppSettings.wmSize.coerceIn(0, 2)) { AppSettings.wmSize = it } }
         row { NavRow("Position", Watermark.POSITIONS[AppSettings.wmPosition.coerceIn(0, 3)]) { open(SettingsPage.WM_POSITION) } }
     }
     TextDialog("CUSTOMISED TEXT", AppSettings.wmText, editing, { AppSettings.wmText = it.take(60); editing = false }) { editing = false }
@@ -400,11 +368,7 @@ private fun SettingsRoot(tab: Int, onTab: (Int) -> Unit, onBack: () -> Unit, onD
     SystemBarIcons(darkIcons = !cb.isDark)
     val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).let { "v${it.versionName} · BUILD ${it.longVersionCode}" } }.getOrNull().orEmpty() }
     androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().cbGrid(cb).windowInsetsPadding(WindowInsets.safeDrawing)) {
-        androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            BrandButton("BACK", cb = cb, onClick = onBack)
-            Text("SETTINGS", Modifier.weight(1f), style = monoStyle(cb.mint, 2.6.sp))
-            Text(version, maxLines = 1, softWrap = false, style = monoStyle(cb.inkDim, 0.4.sp).copy(fontSize = 9.sp))
-        }
+        BrandHeader("SETTINGS", version, onBack)
         Box(Modifier.fillMaxWidth().height(1.dp).background(cb.line))
         androidx.compose.foundation.layout.Row(Modifier.weight(1f).fillMaxWidth()) {
             SettingsRail(tab, onTab)

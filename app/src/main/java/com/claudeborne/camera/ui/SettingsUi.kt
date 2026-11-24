@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -48,30 +49,53 @@ class GroupBuilder {
 fun Group(title: String? = null, footer: String? = null, build: GroupBuilder.() -> Unit) {
     val cb = LocalCb.current
     val items = GroupBuilder().apply(build).items
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        title?.let { Text(it.uppercase(), Modifier.padding(horizontal = 4.dp), style = monoStyle(cb.inkDim, 2.2.sp)) }
-        Column(Modifier.fillMaxWidth().doubleChamferFrame(cb, cb.surface1).padding(horizontal = 18.dp, vertical = 8.dp)) {
-            items.forEachIndexed { i, item ->
-                item()
-                if (i < items.lastIndex) Box(Modifier.fillMaxWidth().height(1.dp).background(cb.line))
+    Column(Modifier.fillMaxWidth().padding(top = if (title != null) 6.dp else 0.dp)) {
+        // the title in mint with a hairline after it, as in the gallery manager
+        title?.let {
+            Row(Modifier.padding(bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(it.uppercase(), style = monoStyle(cb.mint, 2.6.sp))
+                Box(Modifier.padding(start = 10.dp).weight(1f).height(1.dp).background(cb.lineStrong))
             }
         }
-        footer?.let { Text(it, Modifier.padding(horizontal = 4.dp), style = TextStyle(fontFamily = Inter, fontSize = 12.sp, color = cb.inkDim, lineHeight = 17.sp)) }
+        items.forEachIndexed { i, item ->
+            item()
+            if (i < items.lastIndex) Box(Modifier.fillMaxWidth().height(1.dp).background(cb.line))
+        }
+        footer?.let { Text(it, Modifier.padding(top = 6.dp), style = TextStyle(fontFamily = Inter, fontSize = 12.sp, color = cb.inkDim, lineHeight = 17.sp)) }
     }
 }
 
 @Composable
 private fun RowBase(onClick: (() -> Unit)?, content: @Composable RowScope.() -> Unit) {
     val click = if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier
-    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp).then(click).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically, content = content)
+    Row(Modifier.fillMaxWidth().heightIn(min = 48.dp).then(click).padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, content = content)
 }
 
 @Composable
 private fun RowScope.TitleBlock(title: String, subtitle: String?) {
     val cb = LocalCb.current
     Column(Modifier.weight(1f).padding(end = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Text(title, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.ink))
+        Text(title.uppercase(), style = monoStyle(cb.ink, 1.5.sp).copy(fontSize = 12.sp))
         subtitle?.let { Text(it, style = TextStyle(fontFamily = Inter, fontSize = 12.sp, color = cb.inkDim, lineHeight = 17.sp)) }
+    }
+}
+
+/** A setting with a few short choices: the name, with the choices as tabs under it (the selected one tinted and mint). */
+@Composable
+fun ChoiceRow(title: String, options: List<String>, selected: Int, onSelect: (Int) -> Unit) {
+    val cb = LocalCb.current
+    Column(Modifier.fillMaxWidth().padding(vertical = 10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(title.uppercase(), style = monoStyle(cb.ink, 1.5.sp).copy(fontSize = 12.sp))
+        Row {
+            options.forEachIndexed { i, name ->
+                val on = i == selected
+                Text(
+                    name.uppercase(),
+                    Modifier.background(glide(on, cb.surface2, Color.Transparent)).clickable { onSelect(i) }.padding(horizontal = 12.dp, vertical = 9.dp),
+                    maxLines = 1, softWrap = false, style = monoStyle(glide(on, cb.mint, cb.inkDim), 1.2.sp),
+                )
+            }
+        }
     }
 }
 
@@ -88,7 +112,7 @@ fun NavRow(title: String, value: String? = null, onClick: () -> Unit) {
     val cb = LocalCb.current
     RowBase(onClick) {
         TitleBlock(title, null)
-        value?.let { Text(it, Modifier.padding(end = 6.dp), style = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = cb.inkDim)) }
+        value?.let { Text(it.uppercase(), Modifier.padding(end = 6.dp), style = monoStyle(cb.mint, 1.sp)) }
         CbIcon(Icon.CHEVRON, cb.inkDim, size = 18.dp)
     }
 }

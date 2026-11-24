@@ -96,10 +96,7 @@ internal fun Page(title: String, onBack: () -> Unit, content: @Composable () -> 
     val cb = LocalCb.current
     SystemBarIcons(darkIcons = !cb.isDark)
     Column(Modifier.fillMaxSize().cbGrid(cb).windowInsetsPadding(WindowInsets.safeDrawing)) {
-        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-            BrandButton("BACK", cb = cb, onClick = onBack)
-            Text(title, style = monoStyle(cb.mint, 2.6.sp))
-        }
+        BrandHeader(title, "", onBack)
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) { content() }
     }
 }
