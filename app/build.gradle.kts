@@ -43,9 +43,9 @@ android {
             ndk { abiFilters += if (project.hasProperty("emulator")) listOf("arm64-v8a", "x86_64") else listOf("arm64-v8a") }
         }
         debug {
-            // installs next to the release app as "Camera Dev"; no abiFilters so it runs on phone and emulator
+            // installs next to the release app as "Cirrus Stratus Dev"; no abiFilters so it runs on phone and emulator
             applicationIdSuffix = ".dev"
-            resValue("string", "app_name", "Camera Dev")
+            resValue("string", "app_name", "Cirrus Stratus Dev")
         }
     }
 

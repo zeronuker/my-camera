@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         apply(requestOf(intent))
-        // "Camera Dev" (debug) is a different app from the release APK the updater offers, so it never checks
+        // "Cirrus Stratus Dev" (debug) is a different app from the release APK the updater offers, so it never checks
         val debug = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
         if (savedInstanceState == null && !debug && !launch.secure) Updater.check(this, manual = false)
         setContent { ClaudeBorneTheme { Root(launch, ::deliver) } }

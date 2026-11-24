@@ -83,7 +83,9 @@ fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.L
     Visible(splash && screen == Screen.CAMERA, Modifier.fillMaxSize(), enter = androidx.compose.animation.EnterTransition.None, exit = fadeOut(tween(MOTION_MS))) {
         Box(Modifier.fillMaxSize().background(DarkCb.surface0), Alignment.Center) {
             SystemBarIcons(darkIcons = false)
-            Text("CAMERA", style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
+            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                for (word in listOf("CIRRUS", "STRATUS")) Text(word, style = TextStyle(fontFamily = Tourney, fontSize = 34.sp, color = DarkCb.mint, letterSpacing = 4.sp))
+            }
         }
     }
     if (!launch.secure) UpdateDialog() // nothing but the camera over the lock screen
