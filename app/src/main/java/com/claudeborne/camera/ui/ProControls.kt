@@ -41,7 +41,6 @@ import androidx.compose.ui.unit.sp
 import com.claudeborne.camera.camera.LevelMath
 import kotlin.math.roundToInt
 
-private val Glass = Color.Black.copy(alpha = 0.42f)
 
 /** The Pro controls that open a dial. EV keeps its own pill at the top left. */
 internal enum class ProParam { ISO, SHUTTER, WB, FOCUS }
@@ -53,7 +52,7 @@ internal class ProChip(val param: ProParam, val name: String, val value: String,
 @Composable
 internal fun ProSwitch(pro: Boolean, onChange: (Boolean) -> Unit, modifier: Modifier = Modifier) {
     val slide by animateFloatAsState(if (pro) 1f else 0f, tween(MOTION_FAST_MS), label = "pro switch")
-    Box(modifier.height(44.dp).clip(CircleShape).background(Glass)) {
+    Box(modifier.height(44.dp).chrome()) {
         Box(Modifier.offset(x = (slide * 46f).dp).padding(3.dp).size(width = 46.dp, height = 38.dp).clip(CircleShape).background(Color.White.copy(alpha = 0.16f)))
         Row {
             Box(Modifier.size(width = 52.dp, height = 44.dp).clickable { onChange(false) }, Alignment.Center) {
@@ -69,7 +68,7 @@ internal fun ProSwitch(pro: Boolean, onChange: (Boolean) -> Unit, modifier: Modi
 /** The row of manual controls above the lens pills: tap one to open its dial. */
 @Composable
 internal fun ProBar(chips: List<ProChip>, open: ProParam?, onTap: (ProParam) -> Unit) {
-    Row(Modifier.clip(CircleShape).background(Glass).padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
+    Row(Modifier.chrome().padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
         chips.forEach { c ->
             val selected = open == c.param
             val fill by animateColorAsState(if (selected) Color(0x33FFFFFF) else Color.Transparent, tween(MOTION_FAST_MS), label = "pro chip")
@@ -95,7 +94,7 @@ internal fun StepDial(title: String, items: List<String>, index: Int?, onIndex: 
     val onIndexNow by rememberUpdatedState(onIndex)
     LaunchedEffect(index) { if (index != null && kotlin.math.abs(pos - index) > 0.5f) pos = index.toFloat() }
     val auto = index == null
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(64.dp).clip(CircleShape).background(Glass), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(64.dp).chrome(), verticalAlignment = Alignment.CenterVertically) {
         Box(
             Modifier.padding(start = 10.dp).height(40.dp).clip(CircleShape).background(if (auto) DarkCb.mint.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.14f)).clickable(enabled = !auto, onClick = onAuto).padding(horizontal = 12.dp),
             Alignment.Center,
@@ -135,7 +134,7 @@ internal class Toggle(val name: String, val on: Boolean, val click: () -> Unit)
 /** Switches for the assistants, small pills that turn mint when on. */
 @Composable
 internal fun AssistRow(items: List<Toggle>) {
-    Row(Modifier.clip(CircleShape).background(Glass).padding(horizontal = 4.dp), Arrangement.spacedBy(0.dp), Alignment.CenterVertically) {
+    Row(Modifier.chrome().padding(horizontal = 4.dp), Arrangement.spacedBy(0.dp), Alignment.CenterVertically) {
         for ((name, on, click) in items.map { Triple(it.name, it.on, it.click) }) {
             Box(Modifier.height(32.dp).clip(CircleShape).clickable(onClick = click).padding(horizontal = 12.dp), Alignment.Center) {
                 Text(name, style = monoStyle(glide(on, DarkCb.mint, DarkCb.ink2), 1.sp).copy(fontSize = 11.sp))

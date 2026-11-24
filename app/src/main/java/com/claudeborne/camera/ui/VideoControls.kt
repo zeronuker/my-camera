@@ -100,7 +100,6 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
 }
 
 private val RedRecord = Color(0xFFD33A33)
-private val GlassFill = Color.Black.copy(alpha = 0.42f)
 
 /** The mode names under the shutter: tap one, or swipe along the strip. A pill glides under the chosen name. */
 @Composable
@@ -153,7 +152,7 @@ internal fun ModeStrip(selected: Mode, shown: List<Mode>, enabled: Boolean, onSe
 /** The pill at the top right that shows the quality ("4K · 30") and opens the picker. */
 @Composable
 internal fun QualityPill(label: String, open: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    Box(modifier.height(44.dp).clip(CircleShape).background(GlassFill).clickable(onClick = onClick).padding(horizontal = 18.dp), Alignment.Center) {
+    Box(modifier.height(44.dp).chrome().clickable(onClick = onClick).padding(horizontal = 18.dp), Alignment.Center) {
         AnimatedContent(label, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "quality text") { t ->
             Text(t, style = monoStyle(glide(open, DarkCb.mint, Color.White), 0.5.sp).copy(fontSize = 15.sp))
         }
@@ -170,7 +169,7 @@ internal class Chip(val text: String, val selected: Boolean, val onClick: () -> 
 @Composable
 internal fun QualityPanel(rows: List<ChipRow>, modifier: Modifier = Modifier) {
     Column(
-        modifier.clip(RoundedCornerShape(24.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(24.dp)).padding(16.dp),
+        modifier.chrome(RoundedCornerShape(24.dp), ChromePanelFill).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         rows.forEach { row ->
@@ -222,7 +221,7 @@ internal fun VideoMenuPanel(
     onPage: (Menu) -> Unit, onHdr: (Int) -> Unit, onSteady: () -> Unit, onFocus: () -> Unit, onSettings: () -> Unit,
     hdrChoices: List<Pair<String, Int>>, modifier: Modifier = Modifier, showSettings: Boolean = true,
 ) {
-    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).chrome(RoundedCornerShape(28.dp), ChromePanelFill).padding(18.dp)) {
         AnimatedContent(page, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "video menu") { p ->
             if (p == Menu.HDR) {
                 Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {

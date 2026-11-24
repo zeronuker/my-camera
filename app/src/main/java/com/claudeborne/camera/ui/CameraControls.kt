@@ -73,7 +73,6 @@ import kotlin.math.roundToInt
 /** Which page of the 6-dot menu is open. */
 internal enum class Menu { NONE, MAIN, ASPECT, TIMER, INTERVAL, HDR, SOFT, FILTERS, STYLES, SCENES, RETOUCH }
 
-private val Glass = Color.Black.copy(alpha = 0.42f)
 
 /**
  * One finger: tap, long press, or (while the focus box is up) drag up and down for exposure. Two fingers: pinch zoom.
@@ -133,11 +132,15 @@ internal suspend fun PointerInputScope.cameraGestures(
 
 /** Top left: flash and the exposure reading (tap it for the dial). */
 @Composable
-internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Unit, onEv: () -> Unit, modifier: Modifier = Modifier, showFlash: Boolean = true) {
-    Row(modifier.height(44.dp).clip(CircleShape).background(Glass), verticalAlignment = Alignment.CenterVertically) {
+internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Unit, onEv: () -> Unit, modifier: Modifier = Modifier, showFlash: Boolean = true, live: Boolean? = null, onLive: () -> Unit = {}) {
+    Row(modifier.height(44.dp).chrome(), verticalAlignment = Alignment.CenterVertically) {
         if (showFlash) Box(Modifier.size(44.dp).clickable(onClick = onFlash), Alignment.Center) {
             CbIcon(if (flash == Flash.OFF) Icon.FLASH_OFF else Icon.FLASH, glide(flash == Flash.TORCH, DarkCb.mint, Color.White), filled = flash == Flash.ON || flash == Flash.TORCH, size = 22.dp)
             if (flash == Flash.AUTO) Text("A", Modifier.align(Alignment.BottomEnd).padding(end = 7.dp, bottom = 5.dp), style = monoStyle(Color.White, 0.sp).copy(fontSize = 10.sp))
+        }
+        // Live photo switch, shown only where the camera can do it (Photo, rear)
+        Visible(live != null, enter = popEnter, exit = popExit) {
+            Box(Modifier.size(44.dp).clickable(onClick = onLive), Alignment.Center) { CbIcon(Icon.LIVE, glide(live == true, DarkCb.mint, Color.White), size = 22.dp) }
         }
         Row(Modifier.clickable(onClick = onEv).padding(start = if (showFlash) 6.dp else 16.dp, end = 16.dp).height(44.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("EV", style = monoStyle(DarkCb.inkDim, 1.sp).copy(fontSize = 12.sp))
@@ -148,7 +151,7 @@ internal fun TopPill(flash: Flash, ev: Float, evOpen: Boolean, onFlash: () -> Un
 
 @Composable
 internal fun RoundButton(modifier: Modifier = Modifier, size: Int = 44, onClick: () -> Unit, content: @Composable () -> Unit) {
-    Box(modifier.size(size.dp).clip(CircleShape).background(Glass).clickable(onClick = onClick), Alignment.Center) { content() }
+    Box(modifier.size(size.dp).chrome().clickable(onClick = onClick), Alignment.Center) { content() }
 }
 
 /** The focus square with a sun slider beside it: drag up or down anywhere to brighten or darken. */
@@ -177,7 +180,7 @@ internal fun FocusBox(center: Offset, tick: Int, focus: CameraEngine.Focus, lock
         // the sun rides up and down a short track: its height is the exposure
         Box(Modifier.align(if (sunOnRight) Alignment.CenterEnd else Alignment.CenterStart).offset(x = if (sunOnRight) 34.dp else (-34).dp).width(24.dp).height(96.dp), Alignment.Center) {
             Box(Modifier.width(1.dp).height(96.dp).background(Color.White.copy(alpha = 0.35f)))
-            Box(Modifier.offset(y = (-(ev / Ev.LIMIT) * 42f).dp).size(24.dp).clip(CircleShape).background(Glass), Alignment.Center) {
+            Box(Modifier.offset(y = (-(ev / Ev.LIMIT) * 42f).dp).size(24.dp).chrome(), Alignment.Center) {
                 CbIcon(Icon.SUN, if (ev != 0f) DarkCb.mint else Color.White, size = 18.dp)
             }
         }
@@ -191,7 +194,7 @@ internal fun EvDial(ev: Float, onChange: (Float) -> Unit, onReset: () -> Unit) {
     val current by rememberUpdatedState(ev)
     val density = LocalDensity.current
     val tickPx = with(density) { 22.dp.toPx() } // one third of a stop
-    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(64.dp).clip(CircleShape).background(Glass), verticalAlignment = Alignment.CenterVertically) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp).height(64.dp).chrome(), verticalAlignment = Alignment.CenterVertically) {
         Box(Modifier.padding(start = 10.dp).size(40.dp).clip(CircleShape).background(Color.White.copy(alpha = if (ev != 0f) 0.14f else 0.05f)).clickable(enabled = ev != 0f, onClick = onReset), Alignment.Center) {
             CbIcon(Icon.REFRESH, Color.White.copy(alpha = if (ev != 0f) 1f else 0.35f), size = 20.dp)
         }
@@ -234,7 +237,7 @@ internal fun MenuPanel(
     showAutoHdr: Boolean = false, autoHdr: Boolean = false, onAutoHdr: () -> Unit = {},
     showLive: Boolean = false, live: Boolean = false, onLive: () -> Unit = {},
 ) {
-    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(RoundedCornerShape(28.dp)).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), RoundedCornerShape(28.dp)).padding(18.dp)) {
+    Column(modifier.fillMaxWidth().padding(horizontal = 12.dp).chrome(RoundedCornerShape(28.dp), ChromePanelFill).padding(18.dp)) {
         AnimatedContent(menu, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "menu") { page ->
             when (page) {
                 Menu.MAIN, Menu.NONE -> {
@@ -319,7 +322,7 @@ internal fun Countdown(seconds: Int?) {
 
 @Composable
 internal fun LensPills(zoom: Float, stops: FloatArray, onPick: (com.claudeborne.camera.camera.LensPill) -> Unit) {
-    Row(Modifier.clip(CircleShape).background(Glass).padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
+    Row(Modifier.chrome().padding(4.dp), Arrangement.spacedBy(2.dp), Alignment.CenterVertically) {
         ZoomStops.pills(zoom, stops).forEach { p ->
             val fill by animateColorAsState(if (p.selected) Color(0x33FFFFFF) else Color.Transparent, tween(MOTION_FAST_MS), label = "pill")
             Box(
@@ -333,7 +336,7 @@ internal fun LensPills(zoom: Float, stops: FloatArray, onPick: (com.claudeborne.
 /** Shown while pinching: the zoom number and a log-scale ruler with the lens stops marked. */
 @Composable
 internal fun ZoomRuler(zoom: Float, min: Float, max: Float, stops: FloatArray) {
-    Column(Modifier.clip(CircleShape).background(Glass).padding(horizontal = 20.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(Modifier.chrome().padding(horizontal = 20.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(ZoomStops.format(zoom) + "x", style = monoStyle(DarkCb.mint, 1.sp).copy(fontSize = 15.sp))
         Canvas(Modifier.width(240.dp).height(22.dp)) {
             val span = ln(max / min).coerceAtLeast(0.01f)

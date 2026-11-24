@@ -1,5 +1,6 @@
 package com.claudeborne.camera.ui
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
@@ -70,3 +71,14 @@ internal fun GlassPill(glass: GlassState, modifier: Modifier = Modifier, tint: C
     val shape = RoundedCornerShape(50)
     Box(modifier.glass(glass, shape, tint).border(1.dp, Color.White.copy(alpha = 0.14f), shape).pointerInput(Unit) { detectTapGestures { } }) { content() }
 }
+
+internal val ChromeFill = Color.Black.copy(alpha = 0.42f)
+internal val ChromePanelFill = Color.Black.copy(alpha = 0.66f)
+private val ChromeRim = Color.White.copy(alpha = 0.14f)
+
+/**
+ * The floating chrome over the viewfinder (pills, round buttons, panels): one dark tint and one faint rim, so every piece looks alike.
+ * The picture is a GLSurfaceView, which a graphics layer cannot blur, so this is a tint and not frosted glass.
+ */
+internal fun Modifier.chrome(shape: Shape = androidx.compose.foundation.shape.CircleShape, fill: Color = ChromeFill): Modifier =
+    clip(shape).background(fill, shape).border(1.dp, ChromeRim, shape)

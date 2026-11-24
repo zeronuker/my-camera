@@ -1549,6 +1549,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     flash, ev, evOpen, ::cycleFlash,
                     { if (manualExposure) say("EV is off while ISO and shutter are set by hand") else { evOpen = !evOpen; menu = Menu.NONE; qualityOpen = false; formatOpen = false; proOpen = null } },
                     Modifier.align(Alignment.TopStart).padding(16.dp), showFlash = !(isVideo && front),
+                    live = AppSettings.livePhoto.takeIf { mode == Mode.PHOTO && !front && !launch.secure },
+                    onLive = { AppSettings.livePhoto = !AppSettings.livePhoto; say("Live photo: ${if (AppSettings.livePhoto) "On" else "Off"}") },
                 )
                 Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }

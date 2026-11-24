@@ -55,13 +55,12 @@ import com.claudeborne.camera.look.SoftLight
 import com.claudeborne.camera.look.StylePreset
 
 private val PanelShape = RoundedCornerShape(28.dp)
-private val GlassFill = Color.Black.copy(alpha = 0.42f)
 
 /** The glass panel the looks panels sit in (the same as the 6-dot menu). */
 @Composable
 internal fun LookPanel(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     Column(
-        modifier.fillMaxWidth().padding(horizontal = 12.dp).clip(PanelShape).background(Color.Black.copy(alpha = 0.66f)).border(1.dp, Color.White.copy(alpha = 0.14f), PanelShape).padding(vertical = 16.dp),
+        modifier.fillMaxWidth().padding(horizontal = 12.dp).chrome(PanelShape, ChromePanelFill).padding(vertical = 16.dp),
         verticalArrangement = Arrangement.spacedBy(12.dp),
     ) { content() }
 }
