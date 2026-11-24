@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateIntAsState
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -47,6 +48,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -356,15 +358,16 @@ internal fun ZoomRuler(zoom: Float, min: Float, max: Float, stops: FloatArray) {
  * holding takes a burst until the finger lifts. While something is running the inside turns into a mint "stop" square.
  */
 @Composable
-internal fun Shutter(enabled: Boolean, running: Boolean, onTap: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit) {
+internal fun Shutter(enabled: Boolean, running: Boolean, onTap: () -> Unit, onHoldStart: () -> Unit, onHoldEnd: () -> Unit, master: Boolean = false) {
     val press = remember { MutableInteractionSource() }
     val ink by animateColorAsState(if (running) DarkCb.mint else if (enabled) Color.White else Color.White.copy(alpha = 0.55f), tween(MOTION_FAST_MS), label = "shutter")
     val corner by animateIntAsState(if (running) 24 else 50, tween(MOTION_FAST_MS), label = "shutter shape")
+    val ring by animateFloatAsState(if (master) 1f else 0f, tween(MOTION_MS), label = "shutter ring") // Master: the white ring turns into the brand gradient
     val tap by rememberUpdatedState(onTap)
     val holdStart by rememberUpdatedState(onHoldStart)
     val holdEnd by rememberUpdatedState(onHoldEnd)
     Box(
-        Modifier.size(78.dp).pressScale(press, 0.92f).border(4.dp, Color.White, CircleShape).padding(7.dp).clip(RoundedCornerShape(corner)).background(ink)
+        Modifier.size(78.dp).pressScale(press, 0.92f).drawBehind { drawCircle(DarkCb.grad, radius = size.minDimension / 2 - 2.dp.toPx(), style = androidx.compose.ui.graphics.drawscope.Stroke(4.dp.toPx()), alpha = ring) }.border(4.dp, Color.White.copy(alpha = 1f - ring), CircleShape).padding(7.dp).clip(RoundedCornerShape(corner)).background(ink)
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {

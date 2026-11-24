@@ -1569,6 +1569,11 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     onDrag = { pipDragging = it }, onTap = { dualSwap = !dualSwap },
                 )
             }
+            // Master's frame stays inside the system bars
+            val frameDensity = LocalDensity.current
+            val frameTop = maxOf(boxTop, WindowInsets.safeDrawing.getTop(frameDensity))
+            val frameBottom = minOf(boxTop + boxHeight, viewSize.height - WindowInsets.safeDrawing.getBottom(frameDensity))
+            MasterFrame(isMaster && !recording, frameTop, (frameBottom - frameTop).coerceAtLeast(1), AppSettings.gridKind == 0)
             AnimatedOverlay(focusPoint, enter = popEnter, exit = popExit) { FocusBox(it, focusTick, engine.focus, engine.locked, ev, viewSize.width) }
             Box(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing)) {
                 Visible(!multi, Modifier.align(Alignment.TopStart).padding(16.dp), enter = popEnter, exit = popExit) { TopPill(
@@ -1578,7 +1583,10 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                     live = AppSettings.livePhoto.takeIf { mode == Mode.PHOTO && !front && !launch.secure },
                     onLive = { AppSettings.livePhoto = !AppSettings.livePhoto; say("Live photo: ${if (AppSettings.livePhoto) "On" else "Off"}") },
                 ) }
-                Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 72.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
+                Visible(isMaster, Modifier.align(Alignment.TopCenter).padding(top = 112.dp), enter = popEnter, exit = popExit) {
+                    MasterReadout(engine.liveIso, ProRules.shutterLabel(engine.liveNs), if (pro.wb == Wb.Auto) "AUTO" else ProRules.wbLabel(pro.wb), "${com.claudeborne.camera.camera.ZoomStops.format(zoom)}x")
+                }
+                Visible(histogramOn, Modifier.align(Alignment.TopStart).padding(top = 168.dp, start = 16.dp), enter = popEnter, exit = popExit) { HistogramView(histogramBins) }
                 Visible(levelOn, Modifier.align(Alignment.Center), enter = popEnter, exit = popExit) { LevelLine(roll) }
                 Visible(!multi, Modifier.align(Alignment.TopEnd).padding(16.dp), enter = popEnter, exit = popExit) { Row(Modifier, Arrangement.spacedBy(8.dp), Alignment.CenterVertically) {
                     Visible(portraitOwnNow && !readingText, enter = popEnter, exit = popExit) {
@@ -1753,7 +1761,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
                                 } else {
                                     Shutter(
                                         enabled = state == CameraEngine.State.Streaming && !engine.capturing && heat != Heat.TOO_HOT, running = runJob != null,
-                                        onTap = ::shutterTap, onHoldStart = ::holdStart, onHoldEnd = ::holdEnd,
+                                        onTap = ::shutterTap, onHoldStart = ::holdStart, onHoldEnd = ::holdEnd, master = isMaster,
                                     )
                                 }
                                 Box(Modifier.align(Alignment.TopEnd).padding(end = 0.dp)) { CountBadge(runCount) }

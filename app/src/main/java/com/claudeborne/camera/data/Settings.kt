@@ -106,7 +106,7 @@ object Settings {
     // Master (Pro): shooting choices that stay between launches
     var masterFormat by Pref("masterFormat", 0) // 0 JPG, 1 RAW, 2 RAW+JPG (index into MasterFormat)
     var proOn by Pref("proOn", false) // Auto / Pro switch of Master and Pro video
-    var showHistogram by Pref("showHistogram", false)
+    var showHistogram by Pref("showHistogram", true)
     var faceMetering by Pref("faceMetering", false)
     var peaking by Pref("peaking", false)
     var zebra by Pref("zebra", false)

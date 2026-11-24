@@ -48,6 +48,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
@@ -115,6 +116,7 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
     val selectedSlot = if (inMore) MORE_SLOT else selected.ordinal
     val spot = spots[selectedSlot]
     val x by animateFloatAsState(spot?.first ?: 0f, tween(MOTION_MS), label = "mode pill x")
+    val masterEdge by animateFloatAsState(if (selected == Group.MASTER) 1f else 0f, tween(MOTION_MS), label = "master edge") // the MASTER tab is framed in the brand gradient
     val w by animateFloatAsState(spot?.second ?: 0f, tween(MOTION_MS), label = "mode pill width")
     val current by rememberUpdatedState(selected)
     val on by rememberUpdatedState(enabled)
@@ -140,7 +142,7 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
             if (spot != null) {
                 Box(
                     Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(36.dp).clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.16f)),
+                        .background(Color.White.copy(alpha = 0.16f)).drawBehind { drawRoundRect(DarkCb.grad, cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()), alpha = masterEdge) },
                 )
             }
             Row(Modifier.height(36.dp)) {
