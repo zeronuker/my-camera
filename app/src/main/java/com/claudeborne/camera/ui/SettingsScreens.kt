@@ -1,6 +1,7 @@
 package com.claudeborne.camera.ui
 
 import android.Manifest
+import com.claudeborne.camera.data.Keep
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -37,7 +38,7 @@ import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
+private enum class SettingsPage { ROOT, PRESERVE, PRIVACY, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
@@ -72,6 +73,23 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
                             else -> VideoTab { page = it }
                         }
                     }
+                }
+            }
+            SettingsPage.PRESERVE -> Page("PRESERVE SETTINGS", up) {
+                Group(footer = null) {
+                    Keep.entries.filter { !it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
+                }
+                Group("Pro settings", "Some listed functions may not be available on certain device models and software versions. A switch that is off puts that setting back to its default each time the camera starts.") {
+                    Keep.entries.filter { it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
+                }
+            }
+            SettingsPage.PRIVACY -> Page("PRIVACY", up) {
+                Group(footer = "Nothing is sent anywhere unless you tap CHECK FOR UPDATES in About Camera.") {
+                    row { PrivacyLine("Your pictures", "Photos and videos are saved on this phone in DCIM/Camera. This app never uploads them. Text and QR code reading, faces, backgrounds and AI zoom all run on the phone.") }
+                    row { PrivacyLine("Camera and microphone", "The camera is used only while the app is on screen and is released when you leave, so other apps can use it. The microphone is used only while recording a video.") }
+                    row { PrivacyLine("Location", "Only if you switch on Add location tags, and only to write the place into the photo. It stays in the photo file.") }
+                    row { PrivacyLine("Updates", "CHECK FOR UPDATES asks GitHub whether a newer version exists. It sends no personal information.") }
+                    row { PrivacyLine("Crash log", "If the app crashes, the error is kept in a file on this phone. It is shared only when you tap SHARE in Diagnostics.") }
                 }
             }
             SettingsPage.FORMATS -> Page("FORMATS", up) {
@@ -180,6 +198,7 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
 private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
     val context = LocalContext.current
     var refused by remember { mutableStateOf(false) }
+    var askRestore by remember { mutableStateOf(false) }
     fun hasLocation() = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -217,7 +236,25 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         row { NavRow("Photo orientation", ORIENTATIONS[if (AppSettings.photoAutoRotate) 1 else 0]) { open(SettingsPage.ORIENTATION) } }
         row { SwitchRow("Smart suggestions", AppSettings.smartSuggestions, { AppSettings.smartSuggestions = it }, "Short hints such as trying Text mode when a page of text is in view.") }
     }
-    Group { row { NavRow("About Camera", onClick = onAbout) } }
+    Group { row { NavRow("Preserve settings") { open(SettingsPage.PRESERVE) } } }
+    Group {
+        row { NavRow("About Camera", onClick = onAbout) }
+        row { NavRow("Privacy") { open(SettingsPage.PRIVACY) } }
+        row { NavRow("Restore defaults") { askRestore = true } }
+    }
+    if (askRestore) CbDialog("RESTORE DEFAULTS", { askRestore = false }, subtitle = "Every setting goes back to how it was at the start. Your photos are not touched.") {
+        ActionText("RESTORE", RED) { AppSettings.restoreDefaults(); askRestore = false }
+        ActionText("CANCEL", DarkCb.inkDim) { askRestore = false }
+    }
+}
+
+@Composable
+private fun PrivacyLine(title: String, text: String) {
+    val cb = LocalCb.current
+    Column(Modifier.fillMaxWidth().padding(vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(title, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.ink))
+        Text(text, style = TextStyle(fontFamily = Inter, fontSize = 13.sp, color = cb.inkDim, lineHeight = 18.sp))
+    }
 }
 
 @Composable

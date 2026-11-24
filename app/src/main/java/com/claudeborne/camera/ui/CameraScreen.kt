@@ -97,6 +97,8 @@ import com.claudeborne.camera.capture.Flash
 import com.claudeborne.camera.capture.LastLocation
 import com.claudeborne.camera.capture.PhotoRules
 import com.claudeborne.camera.capture.PhotoSaver
+import com.claudeborne.camera.data.Keep
+import kotlin.math.roundToInt
 import com.claudeborne.camera.data.Settings as AppSettings
 import com.claudeborne.camera.gl.PreviewMath
 import com.claudeborne.camera.scan.DocRules
@@ -194,7 +196,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var moreOpen by remember { mutableStateOf(false) } // the More grid of modes
     var moreEditing by remember { mutableStateOf(false) } // its pencil: moving modes
     var evOpen by remember { mutableStateOf(false) }
-    var ev by remember { mutableFloatStateOf(0f) }
+    var ev by remember { mutableFloatStateOf(AppSettings.evSaved / 100f) } // kept between launches while the Exposure setting switch is on
     var focusPoint by remember { mutableStateOf<Offset?>(null) }
     var focusTick by remember { mutableIntStateOf(0) }
     var countdown by remember { mutableStateOf<Int?>(null) }
@@ -208,7 +210,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var thumb by remember { mutableStateOf<ImageBitmap?>(null) }
     var heat by remember { mutableStateOf(Heat.OK) }
     val sound = remember { MediaActionSound().apply { load(MediaActionSound.SHUTTER_CLICK); load(MediaActionSound.START_VIDEO_RECORDING); load(MediaActionSound.STOP_VIDEO_RECORDING) } }
-    var mode by remember { mutableStateOf(if (launch.wantsVideo) Mode.VIDEO else Mode.PHOTO) }
+    var mode by remember { mutableStateOf(if (launch.wantsVideo) Mode.VIDEO else if (launch.wantsPhoto || !AppSettings.keep(Keep.MODE)) Mode.PHOTO else Mode.entries.firstOrNull { it.name == AppSettings.lastMode } ?: Mode.PHOTO) }
     val launchNow by rememberUpdatedState(launch)
     val onResultNow by rememberUpdatedState(onResult)
     val sessionShots = remember { mutableStateListOf<SessionShot>() } // lock-screen launch: the only pictures its viewer may show
@@ -415,6 +417,11 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
     LaunchedEffect(hsOk) { if (!hsOk && mode == Mode.SLOMO && !recording) mode = Mode.VIDEO } // the camera refused high-speed: slo-mo goes away
+    // what the Preserve switches keep (Settings > General > Preserve settings): the mode, the exposure value and the Portrait zoom
+    LaunchedEffect(mode) { if (!launch.secure && !launch.returnsResult) AppSettings.lastMode = mode.name }
+    LaunchedEffect(shownModes) { if (mode !in shownModes && !recording && !savingVideo) mode = Mode.PHOTO } // a kept mode the phone cannot do right now
+    LaunchedEffect(ev) { delay(300); AppSettings.evSaved = (ev * 100).roundToInt() }
+    LaunchedEffect(mode, zoom, pinching, facing) { if (mode == Mode.PORTRAIT && facing == Facing.BACK && !pinching) { delay(400); AppSettings.portraitZoom = (zoom * 1000).roundToInt() } }
     val hdrChoices = remember(caps) {
         if (caps == null || !Encoders.hasTenBit()) emptyList()
         else Hdr.entries.filter { it.camera in caps.tenBitProfiles }.map { it.label to (it.ordinal + 1) }
@@ -1358,6 +1365,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         focusPoint = null
         focusHeld = false
         if (m == Mode.SLOMO && facing == Facing.FRONT) { facing = Facing.BACK; zoom = wide }
+        if (m == Mode.PORTRAIT && facing == Facing.BACK && AppSettings.keep(Keep.PORTRAIT_ZOOM) && AppSettings.portraitZoom > 0) zoom = clampZoom(AppSettings.portraitZoom / 1000f)
         if (m.isVideo && flash != Flash.TORCH) flash = Flash.OFF
         mode = m
         say(m.label)

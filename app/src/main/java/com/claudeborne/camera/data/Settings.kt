@@ -28,9 +28,11 @@ object Settings {
             } as T
         }
 
-        override fun getValue(thisRef: Any?, property: KProperty<*>): T = state.value
+        fun get(): T = state.value
 
-        override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) {
+        fun reset() = set(default)
+
+        fun set(value: T) {
             state.value = value
             prefs.edit().apply {
                 when (value) {
@@ -40,7 +42,18 @@ object Settings {
                 }
             }.apply()
         }
+
+        override fun getValue(thisRef: Any?, property: KProperty<*>): T = get()
+
+        override fun setValue(thisRef: Any?, property: KProperty<*>, value: T) = set(value)
     }
+
+    /** The 11 Preserve switches (Settings > General > Preserve settings). */
+    private val keeps = Keep.entries.associateWith { Pref("keep_${it.name}", it.default) }
+
+    fun keep(k: Keep): Boolean = keeps.getValue(k).get()
+
+    fun setKeep(k: Keep, on: Boolean) = keeps.getValue(k).set(on)
 
     // General
     var shutterSound by Pref("shutterSound", true)
@@ -137,13 +150,27 @@ object Settings {
     var wmPosition by Pref("wmPosition", 0) // 0 bottom, 1 bottom left, 2 bottom right, 3 top
 
     var modeOrder by Pref("modeOrder", "") // the mode order chosen with the pencil in the More grid (ModeOrder); empty = stock order
+    // Remembered between launches only while the matching Preserve switch is on (see Keep)
+    var lastMode by Pref("lastMode", "") // name of the Mode last used
+    var evSaved by Pref("evSaved", 0) // exposure value in hundredths of a stop
+    var portraitZoom by Pref("portraitZoom", 0) // zoom ratio x 1000 last used in Portrait; 0 = none
+
     var lastPhotoUri by Pref("lastPhotoUri", "")
     var lastIsVideo by Pref("lastIsVideo", false)
 
     fun init(context: Context) {
         prefs = context.applicationContext.getSharedPreferences("settings", Context.MODE_PRIVATE)
         all.forEach { it.load() }
+        // a Preserve switch that is off means "start fresh": its settings go back to their defaults at every start
+        val fresh = Preserve.keysToReset(::keep)
+        all.filter { it.key in fresh }.forEach { it.reset() }
     }
+
+    /** Every setting key (used by tests to check that Preserve names real settings). */
+    fun allKeys(): Set<String> = all.mapTo(mutableSetOf()) { it.key }
+
+    /** Restore defaults: every setting back to its default, except the last picture (it is not a setting). */
+    fun restoreDefaults() = all.filter { it.key != "lastPhotoUri" && it.key != "lastIsVideo" }.forEach { it.reset() }
 
     fun rememberLast(uri: String, video: Boolean) { lastPhotoUri = uri; lastIsVideo = video }
 
