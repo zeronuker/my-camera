@@ -127,7 +127,7 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
     LaunchedEffect(selected, spot, viewWidth) {
         if (spot != null && viewWidth > 0) scroll.animateScrollTo((spot.first + spot.second / 2 - viewWidth / 2).roundToInt().coerceAtLeast(0), tween(MOTION_MS))
     }
-    Box(
+    Box(Modifier.fillMaxWidth().chrome().padding(4.dp)) { Box(
         Modifier.fillMaxWidth().onSizeChanged { viewWidth = it.width }.fadeEdges().pointerInput(Unit) {
             var total = 0f
             detectHorizontalDragGestures(
@@ -142,7 +142,7 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
             if (spot != null) {
                 Box(
                     Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(36.dp).clip(CircleShape)
-                        .background(Color.White.copy(alpha = 0.16f)).drawBehind { drawRoundRect(DarkCb.grad, cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()), alpha = masterEdge) },
+                        .background(Color.White.copy(alpha = 0.24f)).drawBehind { drawRoundRect(DarkCb.grad, cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()), alpha = masterEdge) },
                 )
             }
             Row(Modifier.height(36.dp)) {
@@ -156,13 +156,13 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
                     ) {
                         // the name swaps with a short fade when the More slot takes another mode's name
                         AnimatedContent(label, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "mode name") { t ->
-                            Text(t, maxLines = 1, softWrap = false, style = monoStyle(glide(slot == selectedSlot, DarkCb.mint, DarkCb.ink2), 1.6.sp).copy(fontSize = 12.sp))
+                            Text(t, maxLines = 1, softWrap = false, style = monoStyle(glide(slot == selectedSlot, DarkCb.mint, Color.White.copy(alpha = 0.78f)), 1.4.sp).copy(fontSize = 13.sp))
                         }
                     }
                 }
             }
         }
-    }
+    } }
 }
 
 /** The pill at the top right that shows the quality ("4K · 30") and opens the picker. */
@@ -294,7 +294,7 @@ internal fun MicDialog(show: Boolean, blocked: Boolean, onAllow: () -> Unit, onS
 private fun Modifier.fadeEdges(): Modifier = graphicsLayer(compositingStrategy = androidx.compose.ui.graphics.CompositingStrategy.Offscreen).drawWithContent {
     drawContent()
     drawRect(
-        androidx.compose.ui.graphics.Brush.horizontalGradient(0f to Color.Transparent, 0.1f to Color.Black, 0.9f to Color.Black, 1f to Color.Transparent),
+        androidx.compose.ui.graphics.Brush.horizontalGradient(0f to Color.Transparent, 0.04f to Color.Black, 0.96f to Color.Black, 1f to Color.Transparent),
         blendMode = androidx.compose.ui.graphics.BlendMode.DstIn,
     )
 }
