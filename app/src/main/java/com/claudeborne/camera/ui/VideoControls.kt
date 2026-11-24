@@ -141,22 +141,22 @@ internal fun ModeStrip(selected: Group, shown: List<Group>, enabled: Boolean, on
         Box(Modifier.horizontalScroll(scroll, enabled = false)) {
             if (spot != null) {
                 Box(
-                    Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(36.dp).clip(CircleShape)
+                    Modifier.offset { IntOffset(x.roundToInt(), 0) }.width(with(density) { w.toDp() }).height(40.dp).clip(CircleShape)
                         .background(Color.White.copy(alpha = 0.24f)).drawBehind { drawRoundRect(DarkCb.grad, cornerRadius = androidx.compose.ui.geometry.CornerRadius(size.height / 2), style = androidx.compose.ui.graphics.drawscope.Stroke(1.5.dp.toPx()), alpha = masterEdge) },
                 )
             }
-            Row(Modifier.height(36.dp)) {
+            Row(Modifier.height(40.dp)) {
                 slots.forEach { (slot, label) ->
                     Box(
-                        Modifier.height(36.dp).padding(horizontal = 8.dp).clickable(enabled = enabled) {
+                        Modifier.height(40.dp).padding(horizontal = 6.dp).clickable(enabled = enabled) {
                             if (slot == MORE_SLOT) onMore()
                             else Group.entries[slot].let { g -> if (g == selected) onReselect(g) else onSelect(g) }
-                        }.onGloballyPositioned { spots[slot] = it.positionInParent().x - with(density) { 8.dp.toPx() } to it.size.width + with(density) { 16.dp.toPx() } },
+                        }.onGloballyPositioned { spots[slot] = it.positionInParent().x - with(density) { 6.dp.toPx() } to it.size.width + with(density) { 12.dp.toPx() } },
                         Alignment.Center,
                     ) {
                         // the name swaps with a short fade when the More slot takes another mode's name
                         AnimatedContent(label, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "mode name") { t ->
-                            Text(t, maxLines = 1, softWrap = false, style = monoStyle(glide(slot == selectedSlot, DarkCb.mint, Color.White.copy(alpha = 0.78f)), 1.4.sp).copy(fontSize = 13.sp))
+                            Text(t, maxLines = 1, softWrap = false, style = monoStyle(glide(slot == selectedSlot, DarkCb.mint, Color.White.copy(alpha = 0.78f)), 0.7.sp).copy(fontSize = 14.sp))
                         }
                     }
                 }

@@ -94,8 +94,8 @@ internal fun VariantBar(group: Group, variants: List<Mode>, selected: Mode, enab
         variants.forEach { m ->
             val on = m == selected
             val fill by animateColorAsState(if (on) DarkCb.mint.copy(alpha = 0.22f) else Color.Transparent, tween(MOTION_FAST_MS), label = "variant fill")
-            Box(Modifier.height(32.dp).clip(CircleShape).background(fill).clickable(enabled = enabled && !on) { onPick(m) }.padding(horizontal = 12.dp), Alignment.Center) {
-                Text(group.variantOf(m), maxLines = 1, softWrap = false, style = monoStyle(glide(on, DarkCb.mint, Color.White), 0.8.sp).copy(fontSize = 11.sp))
+            Box(Modifier.height(28.dp).clip(CircleShape).background(fill).clickable(enabled = enabled && !on) { onPick(m) }.padding(horizontal = 11.dp), Alignment.Center) {
+                Text(group.variantOf(m), maxLines = 1, softWrap = false, style = monoStyle(glide(on, DarkCb.mint, Color.White), 0.8.sp).copy(fontSize = 10.sp))
             }
         }
     }
