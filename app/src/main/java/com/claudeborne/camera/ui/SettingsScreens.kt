@@ -1,6 +1,23 @@
 package com.claudeborne.camera.ui
 
 import android.Manifest
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.text.font.FontWeight
+import com.claudeborne.camera.data.Updater
 import com.claudeborne.camera.data.Keep
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -38,7 +55,7 @@ import com.claudeborne.camera.look.GridKind
 import com.claudeborne.camera.video.Encoders
 import com.claudeborne.camera.data.Settings as AppSettings
 
-private enum class SettingsPage { ROOT, PRESERVE, PRIVACY, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
+private enum class SettingsPage { ROOT, FORMATS, HOLD, METHODS, LENS, VOLUME, ORIENTATION, ADAPTIVE, BITRATE, DUAL_REC, WATERMARK, WM_TARGET, WM_SIZE, WM_POSITION, COMPOSITION, GRID, SCANNING }
 
 private val VOLUME_ACTIONS = listOf("Volume", "Shutter", "Zoom")
 private val ORIENTATIONS = listOf("Follow system", "Auto-rotate")
@@ -49,7 +66,7 @@ private val ADAPTIVE = listOf("Off", "For 30 fps videos", "For 30 fps and 60 fps
  * that exist are shown; rows for later phases (watermark, composition, scanning, video…) appear when those phases are built.
  */
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) {
     var page by remember { mutableStateOf(SettingsPage.ROOT) }
     var tab by rememberSaveable { mutableIntStateOf(0) }
     BackHandler(page != SettingsPage.ROOT) { page = SettingsPage.ROOT }
@@ -63,35 +80,7 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
     ) { p ->
         val up = { page = SettingsPage.ROOT }
         when (p) {
-            SettingsPage.ROOT -> Page("SETTINGS", onBack) {
-                SegmentedTabs(listOf("General", "Photo", "Video"), tab) { tab = it }
-                AnimatedContent(tab, transitionSpec = { fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "tab content") { t ->
-                    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(18.dp)) {
-                        when (t) {
-                            0 -> GeneralTab({ page = it }, onAbout)
-                            1 -> PhotoTab { page = it }
-                            else -> VideoTab { page = it }
-                        }
-                    }
-                }
-            }
-            SettingsPage.PRESERVE -> Page("PRESERVE SETTINGS", up) {
-                Group(footer = null) {
-                    Keep.entries.filter { !it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
-                }
-                Group("Pro settings", "Some listed functions may not be available on certain device models and software versions. A switch that is off puts that setting back to its default each time the camera starts.") {
-                    Keep.entries.filter { it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
-                }
-            }
-            SettingsPage.PRIVACY -> Page("PRIVACY", up) {
-                Group(footer = "Nothing is sent anywhere unless you tap CHECK FOR UPDATES in About Camera.") {
-                    row { PrivacyLine("Your pictures", "Photos and videos are saved on this phone in DCIM/Camera. This app never uploads them. Text and QR code reading, faces, backgrounds and AI zoom all run on the phone.") }
-                    row { PrivacyLine("Camera and microphone", "The camera is used only while the app is on screen and is released when you leave, so other apps can use it. The microphone is used only while recording a video.") }
-                    row { PrivacyLine("Location", "Only if you switch on Add location tags, and only to write the place into the photo. It stays in the photo file.") }
-                    row { PrivacyLine("Updates", "CHECK FOR UPDATES asks GitHub whether a newer version exists. It sends no personal information.") }
-                    row { PrivacyLine("Crash log", "If the app crashes, the error is kept in a file on this phone. It is shared only when you tap SHARE in Diagnostics.") }
-                }
-            }
+            SettingsPage.ROOT -> SettingsRoot(tab, { tab = it }, onBack, onDiagnostics) { page = it }
             SettingsPage.FORMATS -> Page("FORMATS", up) {
                 Group(
                     "Photo",
@@ -195,10 +184,9 @@ fun SettingsScreen(onBack: () -> Unit, onAbout: () -> Unit) {
 }
 
 @Composable
-private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
+private fun GeneralTab(open: (SettingsPage) -> Unit) {
     val context = LocalContext.current
     var refused by remember { mutableStateOf(false) }
-    var askRestore by remember { mutableStateOf(false) }
     fun hasLocation() = context.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
         context.checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -207,7 +195,7 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         refused = !ok
     }
     Group(
-        "General",
+        null,
         if (refused) "Location access was refused. Allow it in the phone's settings for this app, then switch this on." else null,
     ) {
         row { SwitchRow("Shutter sound", AppSettings.shutterSound, { AppSettings.shutterSound = it }) }
@@ -236,15 +224,72 @@ private fun GeneralTab(open: (SettingsPage) -> Unit, onAbout: () -> Unit) {
         row { NavRow("Photo orientation", ORIENTATIONS[if (AppSettings.photoAutoRotate) 1 else 0]) { open(SettingsPage.ORIENTATION) } }
         row { SwitchRow("Smart suggestions", AppSettings.smartSuggestions, { AppSettings.smartSuggestions = it }, "Short hints such as trying Text mode when a page of text is in view.") }
     }
-    Group { row { NavRow("Preserve settings") { open(SettingsPage.PRESERVE) } } }
+}
+
+/** KEEP: the 11 Preserve switches. */
+@Composable
+private fun KeepTab() {
+    Text("A switch that is off puts that setting back to its default each time the camera starts.", style = TextStyle(fontFamily = Inter, fontSize = 13.sp, color = LocalCb.current.inkDim, lineHeight = 18.sp))
     Group {
-        row { NavRow("About Camera", onClick = onAbout) }
-        row { NavRow("Privacy") { open(SettingsPage.PRIVACY) } }
+        Keep.entries.filter { !it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
+    }
+    Group("Pro settings", "Some listed functions may not be available on certain device models and software versions.") {
+        Keep.entries.filter { it.isPro }.forEach { k -> row { SwitchRow(k.title, AppSettings.keep(k), { AppSettings.setKeep(k, it) }, k.note) } }
+    }
+}
+
+/** PRIVACY: what stays on the phone, in plain words. */
+@Composable
+private fun PrivacyTab() {
+    Group(footer = "Nothing is sent anywhere unless you tap CHECK FOR UPDATES in About.") {
+        row { PrivacyLine("Your pictures", "Photos and videos are saved on this phone in DCIM/Camera. This app never uploads them. Text and QR code reading, faces, backgrounds and AI zoom all run on the phone.") }
+        row { PrivacyLine("Camera and microphone", "The camera is used only while the app is on screen and is released when you leave, so other apps can use it. The microphone is used only while recording a video.") }
+        row { PrivacyLine("Location", "Only if you switch on Add location tags, and only to write the place into the photo. It stays in the photo file.") }
+        row { PrivacyLine("Updates", "CHECK FOR UPDATES asks GitHub whether a newer version exists. It sends no personal information.") }
+        row { PrivacyLine("Crash log", "If the app crashes, the error is kept in a file on this phone. It is shared only when you tap SHARE in Diagnostics.") }
+    }
+}
+
+/** ABOUT: version, update check, Diagnostics and Restore defaults. */
+@Composable
+private fun AboutTab(onDiagnostics: () -> Unit) {
+    val context = LocalContext.current
+    val cb = LocalCb.current
+    val info = remember { context.packageManager.getPackageInfo(context.packageName, 0) }
+    var askRestore by remember { mutableStateOf(false) }
+    Group("This build") {
+        row { SettingsInfoRow("Version", info.versionName ?: "") }
+        row { SettingsInfoRow("Build", "${info.longVersionCode}") }
+    }
+    BrandButton("CHECK FOR UPDATES", Modifier.fillMaxWidth(), primary = true, enabled = Updater.state !is Updater.State.Checking && Updater.state !is Updater.State.Downloading) {
+        Updater.check(context, manual = true)
+    }
+    AnimatedContent(Updater.state::class, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "update status") { _ ->
+        val note = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = cb.ink2)
+        when (val s = Updater.state) {
+            Updater.State.Checking -> WorkingLine("CHECKING…", color = cb.mint)
+            Updater.State.UpToDate -> Text("You have the newest version.", style = note)
+            is Updater.State.Failed -> Text("Could not check: ${s.reason}", style = note.copy(color = Warn))
+            is Updater.State.Downloading -> WorkingLine("DOWNLOADING… ${(s.progress * 100).toInt()}%", s.progress, cb.mint)
+            else -> Unit
+        }
+    }
+    BrandButton("DIAGNOSTICS", Modifier.fillMaxWidth(), onClick = onDiagnostics)
+    Group("Reset", "Every setting goes back to how it was at the start. Your photos are not touched.") {
         row { NavRow("Restore defaults") { askRestore = true } }
     }
     CbDialog("RESTORE DEFAULTS", { askRestore = false }, subtitle = "Every setting goes back to how it was at the start. Your photos are not touched.", show = askRestore) {
         ActionText("RESTORE", RED) { AppSettings.restoreDefaults(); askRestore = false }
         ActionText("CANCEL", DarkCb.inkDim) { askRestore = false }
+    }
+}
+
+@Composable
+private fun SettingsInfoRow(label: String, value: String) {
+    val cb = LocalCb.current
+    androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(vertical = 14.dp), Arrangement.SpaceBetween) {
+        Text(label, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.ink))
+        Text(value, style = TextStyle(fontFamily = Inter, fontSize = 16.sp, color = cb.inkDim))
     }
 }
 
@@ -334,5 +379,86 @@ private fun TextDialog(title: String, initial: String, show: Boolean, onSave: (S
         )
         BrandButton("SAVE", Modifier.fillMaxWidth(), primary = true, cb = DarkCb) { onSave(text) }
         BrandButton("CANCEL", Modifier.fillMaxWidth(), cb = DarkCb, onClick = onDismiss)
+    }
+}
+
+/** The tabs down the left of Settings, as in the gallery manager: an icon over a short name on a phone. */
+private enum class SetTab(val label: String, val hint: String, val icon: Icon) {
+    GENERAL("GENERAL", "look · sound · files", Icon.GEAR),
+    PHOTO("PHOTO", "burst · lenses · scanning", Icon.CAMERA),
+    VIDEO("VIDEO", "quality · locks · dual", Icon.VIDEO),
+    KEEP("KEEP", "what the camera remembers", Icon.PIN),
+    PRIVACY("PRIVACY", "what stays on the phone", Icon.LOCK),
+    ABOUT("ABOUT", "version · update · reset", Icon.INFO),
+}
+
+/** Settings home: header, the tab rail on the left, the chosen tab's settings on the right. Sub-pages open over it (see [SettingsScreen]). */
+@Composable
+private fun SettingsRoot(tab: Int, onTab: (Int) -> Unit, onBack: () -> Unit, onDiagnostics: () -> Unit, open: (SettingsPage) -> Unit) {
+    val cb = LocalCb.current
+    val context = LocalContext.current
+    SystemBarIcons(darkIcons = !cb.isDark)
+    val version = remember { runCatching { context.packageManager.getPackageInfo(context.packageName, 0).let { "v${it.versionName} · BUILD ${it.longVersionCode}" } }.getOrNull().orEmpty() }
+    androidx.compose.foundation.layout.Column(Modifier.fillMaxSize().cbGrid(cb).windowInsetsPadding(WindowInsets.safeDrawing)) {
+        androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            BrandButton("BACK", cb = cb, onClick = onBack)
+            Text("SETTINGS", Modifier.weight(1f), style = monoStyle(cb.mint, 2.6.sp))
+            Text(version, maxLines = 1, softWrap = false, style = monoStyle(cb.inkDim, 0.4.sp).copy(fontSize = 9.sp))
+        }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(cb.line))
+        androidx.compose.foundation.layout.Row(Modifier.weight(1f).fillMaxWidth()) {
+            SettingsRail(tab, onTab)
+            Box(Modifier.width(1.dp).fillMaxHeight().background(cb.line))
+            // changing tab slides the page: up when moving down the tabs, down when moving back up
+            AnimatedContent(
+                tab, Modifier.weight(1f).fillMaxHeight(),
+                transitionSpec = {
+                    val dir = if (targetState >= initialState) 1 else -1
+                    (fadeIn(tween(MOTION_MS)) + slideInVertically(tween(MOTION_MS)) { dir * it / 14 }) togetherWith
+                        (fadeOut(tween(MOTION_FAST_MS)) + slideOutVertically(tween(MOTION_FAST_MS)) { -dir * it / 14 })
+                },
+                label = "settings tab",
+            ) { shown ->
+                val t = SetTab.entries[shown]
+                Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 14.dp, vertical = 18.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text(t.label, style = TextStyle(fontFamily = Tourney, fontWeight = FontWeight.Bold, fontSize = 20.sp, letterSpacing = 1.6.sp, color = cb.ink))
+                    Text(t.hint.uppercase(), style = monoStyle(cb.inkDim, 1.8.sp).copy(fontSize = 10.sp))
+                    when (t) {
+                        SetTab.GENERAL -> GeneralTab(open)
+                        SetTab.PHOTO -> PhotoTab(open)
+                        SetTab.VIDEO -> VideoTab(open)
+                        SetTab.KEEP -> KeepTab()
+                        SetTab.PRIVACY -> PrivacyTab()
+                        SetTab.ABOUT -> AboutTab(onDiagnostics)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SettingsRail(selected: Int, onSelect: (Int) -> Unit) {
+    val cb = LocalCb.current
+    val itemH = 62.dp
+    val gap = 2.dp
+    val markY by androidx.compose.animation.core.animateDpAsState((itemH + gap) * selected, tween(MOTION_MS), label = "rail mark")
+    Box(Modifier.width(78.dp).fillMaxHeight().background(cb.surface0).padding(horizontal = 6.dp, vertical = 8.dp)) {
+        Box(Modifier.offset(y = markY).fillMaxWidth().height(itemH).background(cb.surface2)) {
+            Box(Modifier.padding(vertical = 6.dp).width(2.dp).fillMaxHeight().background(cb.grad))
+        }
+        Column(verticalArrangement = Arrangement.spacedBy(gap)) {
+            SetTab.entries.forEachIndexed { i, t ->
+                val on = i == selected
+                val color = glide(on, cb.mint, cb.ink2)
+                Column(
+                    Modifier.fillMaxWidth().height(itemH).selectable(on, role = androidx.compose.ui.semantics.Role.Tab) { onSelect(i) },
+                    Arrangement.spacedBy(5.dp, Alignment.CenterVertically), Alignment.CenterHorizontally,
+                ) {
+                    CbIcon(t.icon, color, size = 22.dp)
+                    Text(t.label, style = monoStyle(color, 0.8.sp).copy(fontSize = 9.sp))
+                }
+            }
+        }
     }
 }

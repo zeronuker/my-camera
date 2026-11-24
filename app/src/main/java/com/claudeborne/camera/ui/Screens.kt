@@ -52,9 +52,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-private enum class Screen { CAMERA, SETTINGS, ABOUT, DIAGNOSTICS }
+private enum class Screen { CAMERA, SETTINGS, DIAGNOSTICS }
 
-/** Navigation: the camera, Settings, About, Diagnostics. Going deeper pushes in from the right, coming back fades. A splash covers the camera while it opens. */
+/** Navigation: the camera, Settings, Diagnostics. Going deeper pushes in from the right, coming back fades. A splash covers the camera while it opens. */
 @Composable
 fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.LaunchRequest(), onResult: (android.net.Uri?) -> Unit = {}) {
     var screen by remember { mutableStateOf(Screen.CAMERA) }
@@ -62,13 +62,13 @@ fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.L
     var splash by remember { mutableStateOf(true) }
     LaunchedEffect(com.claudeborne.camera.data.Perf.liveFrame) { if (com.claudeborne.camera.data.Perf.liveFrame) { delay(120); splash = false } }
     LaunchedEffect(Unit) { delay(1500); splash = false }
-    BackHandler(screen == Screen.SETTINGS || screen == Screen.ABOUT || screen == Screen.DIAGNOSTICS) {
-        screen = when (screen) { Screen.DIAGNOSTICS -> Screen.ABOUT; Screen.ABOUT -> Screen.SETTINGS; else -> Screen.CAMERA }
+    BackHandler(screen == Screen.SETTINGS || screen == Screen.DIAGNOSTICS) {
+        screen = when (screen) { Screen.DIAGNOSTICS -> Screen.SETTINGS; else -> Screen.CAMERA }
     }
     AnimatedContent(
         screen,
         transitionSpec = {
-            // going deeper (camera > settings > about > diagnostics) pushes in from the right; coming back fades
+            // going deeper (camera > settings > diagnostics) pushes in from the right; coming back fades
             if (targetState.ordinal > initialState.ordinal) pushEnter togetherWith fadeOut(tween(MOTION_FAST_MS))
             else fadeIn(tween(MOTION_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS))
         },
@@ -76,9 +76,8 @@ fun Root(launch: com.claudeborne.camera.LaunchRequest = com.claudeborne.camera.L
     ) { s ->
         when (s) {
             Screen.CAMERA -> CameraScreen(launch, onResult) { if (!launch.secure) screen = Screen.SETTINGS }
-            Screen.SETTINGS -> SettingsScreen({ screen = Screen.CAMERA }, { screen = Screen.ABOUT })
-            Screen.ABOUT -> AboutScreen({ screen = Screen.SETTINGS }, { screen = Screen.DIAGNOSTICS })
-            Screen.DIAGNOSTICS -> DiagnosticsScreen { screen = Screen.ABOUT }
+            Screen.SETTINGS -> SettingsScreen({ screen = Screen.CAMERA }, { screen = Screen.DIAGNOSTICS })
+            Screen.DIAGNOSTICS -> DiagnosticsScreen { screen = Screen.SETTINGS }
         }
     }
     Visible(splash && screen == Screen.CAMERA, Modifier.fillMaxSize(), enter = androidx.compose.animation.EnterTransition.None, exit = fadeOut(tween(MOTION_MS))) {
@@ -111,28 +110,6 @@ private fun Card(content: @Composable () -> Unit) {
 
 @Composable
 private fun Body(text: String, color: Color = LocalCb.current.ink2) = Text(text, style = TextStyle(fontFamily = Inter, fontSize = 14.sp, color = color))
-
-@Composable
-private fun AboutScreen(onBack: () -> Unit, onDiagnostics: () -> Unit) = Page("ABOUT CAMERA", onBack) {
-    val context = LocalContext.current
-    val info = remember { context.packageManager.getPackageInfo(context.packageName, 0) }
-    val cb = LocalCb.current
-    Card {
-        Text("VERSION", style = monoStyle(cb.inkDim, 1.sp)); Body(info.versionName ?: "")
-        Text("BUILD", style = monoStyle(cb.inkDim, 1.sp)); Body("${info.longVersionCode}")
-    }
-    BrandButton("CHECK FOR UPDATES", Modifier.fillMaxWidth(), primary = true, enabled = Updater.state !is Updater.State.Checking && Updater.state !is Updater.State.Downloading) {
-        Updater.check(context, manual = true)
-    }
-    androidx.compose.animation.AnimatedContent(Updater.state::class, transitionSpec = { fadeIn(tween(MOTION_FAST_MS)) togetherWith fadeOut(tween(MOTION_FAST_MS)) }, label = "update status") { _ -> when (val s = Updater.state) {
-        Updater.State.Checking -> WorkingLine("CHECKING…", color = cb.mint)
-        Updater.State.UpToDate -> Body("You have the newest version.")
-        is Updater.State.Failed -> Body("Could not check: ${s.reason}", Warn)
-        is Updater.State.Downloading -> WorkingLine("DOWNLOADING… ${(s.progress * 100).toInt()}%", s.progress, cb.mint)
-        else -> Unit
-    } }
-    BrandButton("DIAGNOSTICS", Modifier.fillMaxWidth(), onClick = onDiagnostics)
-}
 
 @Composable
 private fun DiagnosticsScreen(onBack: () -> Unit) = Page("DIAGNOSTICS", onBack) {

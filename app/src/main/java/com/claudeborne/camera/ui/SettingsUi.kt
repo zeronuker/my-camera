@@ -117,21 +117,3 @@ fun CbSwitch(checked: Boolean) {
         Box(Modifier.offset(x = x).size(22.dp).clip(CircleShape).background(knob))
     }
 }
-
-/** The General / Photo / Video bar: a fill slides under the chosen tab. */
-@Composable
-fun SegmentedTabs(labels: List<String>, selected: Int, onSelect: (Int) -> Unit) {
-    val cb = LocalCb.current
-    val at by animateFloatAsState(selected.toFloat(), tween(MOTION_MS), label = "tab")
-    BoxWithConstraints(Modifier.fillMaxWidth().height(46.dp).border(1.dp, cb.lineStrong)) {
-        val each = maxWidth / labels.size
-        Box(Modifier.offset(x = each * at).width(each).fillMaxHeight().background(cb.surface3))
-        Row(Modifier.fillMaxWidth()) {
-            labels.forEachIndexed { i, label ->
-                Box(Modifier.weight(1f).fillMaxHeight().clickable { onSelect(i) }, Alignment.Center) {
-                    Text(label.uppercase(), style = monoStyle(glide(i == selected, cb.mint, cb.ink2), 2.2.sp))
-                }
-            }
-        }
-    }
-}
