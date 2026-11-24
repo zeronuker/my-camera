@@ -228,7 +228,8 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
     var dualSwap by remember { mutableStateOf(false) }
     var pip by remember { mutableStateOf(Pip()) }
     var pipDragging by remember { mutableStateOf(false) }
-    var quadRear by remember { mutableIntStateOf(minOf(3, multiCams?.physical?.size ?: 0)) }
+    // the OnePlus 15 refuses 3 rear lenses + the front together (camera error 4, tested on the phone): the multi-lens view is 2 rear lenses + the front
+    var quadRear by remember { mutableIntStateOf(minOf(2, multiCams?.physical?.size ?: 0)) }
     var multiReady by remember { mutableStateOf(false) }
     var dualStills by remember { mutableStateOf(true) } // Dual Photo asks for full-size photos; false for the rest of the run once the phone refuses
     var dualBusy by remember { mutableStateOf(false) } // a Dual Photo is being taken and saved
@@ -497,7 +498,7 @@ fun CameraScreen(launch: LaunchRequest, onResult: (Uri?) -> Unit, onSettings: ()
         }
     }
     // leaving Quad view: next time it tries all the cameras again, with no old reason on screen
-    LaunchedEffect(mode) { if (mode != Mode.QUAD) { quadRear = minOf(3, multiCams?.physical?.size ?: 0); quadNote = null } }
+    LaunchedEffect(mode) { if (mode != Mode.QUAD) { quadRear = minOf(2, multiCams?.physical?.size ?: 0); quadNote = null } }
     // Quad view must stream smoothly (about 30 fps in every tile) and stay cool: watch the real frame rate of each camera and the phone heat, and step down
     // (3 rear cameras and the front, then 2 and the front, then not at all) rather than show a stuttering or hot picture
     LaunchedEffect(multiReady, mode, quadRear) {

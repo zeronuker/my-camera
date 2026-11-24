@@ -79,7 +79,7 @@ internal enum class Mode(val label: String, val style: VideoStyle?) {
     UNDERWATER("UNDERWATER", null),
     DUALPHOTO("DUAL PHOTO", null),
     DUAL("DUAL VIDEO", null),
-    QUAD("QUAD", null),
+    QUAD("TRIPLE", null), // 2 rear lenses + the front (the phone refuses 3 lenses + front)
     ;
 
     /** Dual and Quad view: several cameras at once, drawn as one picture. */
