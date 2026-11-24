@@ -60,21 +60,40 @@ class MultiCameraEngine(private val context: Context) {
     class Cameras(val rear: String, val front: String, val physical: List<String>)
 
     private var known: Cameras? = null
+    private val charsCache = HashMap<String, CameraCharacteristics>()
+
+    /**
+     * The characteristics of camera [id], asked once and kept. Right after the camera service restarts (Quad view with all four cameras can do that)
+     * the phone answers "unknown device" for a few seconds; off the main thread this retries for up to 8 s before giving up.
+     */
+    private fun chars(id: String): CameraCharacteristics {
+        synchronized(charsCache) { charsCache[id]?.let { return it } }
+        val mayWait = android.os.Looper.myLooper() != android.os.Looper.getMainLooper()
+        var tries = 0
+        while (true) {
+            try {
+                return manager.getCameraCharacteristics(id).also { synchronized(charsCache) { charsCache[id] = it } }
+            } catch (e: Exception) {
+                if (!mayWait || ++tries > 20) throw e
+                Thread.sleep(400)
+            }
+        }
+    }
 
     /** The camera ids, asked once and remembered (a later question that failed once ended a Quad step-down with a wrong message). */
     fun cameras(): Cameras? = known ?: look().also { known = it }
 
     private fun look(): Cameras? = try {
         val ids = manager.cameraIdList.toList()
-        fun facing(id: String) = manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)
-        val rear = ids.filter { facing(it) == CameraCharacteristics.LENS_FACING_BACK }.maxByOrNull { manager.getCameraCharacteristics(it).physicalCameraIds.size }
+        fun facing(id: String) = chars(id).get(CameraCharacteristics.LENS_FACING)
+        val rear = ids.filter { facing(it) == CameraCharacteristics.LENS_FACING_BACK }.maxByOrNull { chars(it).physicalCameraIds.size }
         val front = ids.firstOrNull { facing(it) == CameraCharacteristics.LENS_FACING_FRONT }
         if (rear == null || front == null) null else {
             // the phone must list them as a concurrent pair; a debuggable build tries anyway so the emulator can show the layouts
             val pairOk = manager.concurrentCameraIds.any { rear in it && front in it }
             val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
             if (!pairOk && !debuggable) null else {
-                val physical = manager.getCameraCharacteristics(rear).physicalCameraIds.sortedBy { focal(it) }
+                val physical = chars(rear).physicalCameraIds.sortedBy { focal(it) }
                 Cameras(rear, front, physical)
             }
         }
@@ -83,7 +102,7 @@ class MultiCameraEngine(private val context: Context) {
         null
     }
 
-    private fun focal(id: String): Float = manager.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+    private fun focal(id: String): Float = chars(id).get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
 
     /**
      * Opens [rearCount] rear streams (1 = the logical camera, 2 or 3 = that many physical lenses from the wide end) and the front camera.
@@ -100,7 +119,9 @@ class MultiCameraEngine(private val context: Context) {
                 finished = true
                 if (infos == null) stop()
                 if (message != null) Log.w(TAG, "open(rear=$rearCount, stills=$stills) failed: $message")
-                done(infos, message)
+                // raw system text such as "unable to retrieve camera characteristics for unknown device 3" means the camera service restarted
+                val shown = if (message != null && (message.contains("characteristics", true) || message.contains("unknown device", true))) "The camera service restarted" else message
+                done(infos, shown)
             }
             try {
                 val cams = cameras() ?: return@post finish(null, "This phone cannot use the front and rear cameras together")
@@ -109,11 +130,11 @@ class MultiCameraEngine(private val context: Context) {
                 // Quad view: the smallest streams (about 640 x 480), as the probe configured them; three lenses and the front at once need little bandwidth each
                 val maxPixels = if (rearCount > 1) 400_000 else 1_600_000
                 fun pick(id: String): Pair<Int, Int>? {
-                    val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+                    val map = chars(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
                     return DualRules.chooseSize(map.getOutputSizes(SurfaceTexture::class.java).orEmpty().map { it.width to it.height }, maxPixels, 4f / 3f)
                 }
                 fun stillSizeOf(id: String): Pair<Int, Int>? {
-                    val map = manager.getCameraCharacteristics(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
+                    val map = chars(id).get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return null
                     val sizes = map.getOutputSizes(ImageFormat.JPEG).orEmpty().map { it.width to it.height }
                     return DualRules.chooseSize(sizes, Int.MAX_VALUE, 4f / 3f)
                 }
@@ -122,18 +143,18 @@ class MultiCameraEngine(private val context: Context) {
                 if (rearCount == 1) {
                     val size = pick(cams.rear) ?: return@post finish(null, "No picture size for the rear camera")
                     rearStreams += Triple(textures[0], null, size)
-                    infos += SourceInfo(manager.getCameraCharacteristics(cams.rear).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, size.first, size.second, false)
+                    infos += SourceInfo(chars(cams.rear).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, size.first, size.second, false)
                 } else {
                     // two lenses: the ultra wide and the main; three: ultra wide, main and tele
                     val lenses = if (rearCount == 2) cams.physical.take(2) else cams.physical.take(3)
                     lenses.forEachIndexed { i, id ->
                         val size = pick(id) ?: return@post finish(null, "No picture size for lens $id")
                         rearStreams += Triple(textures[i], id, size)
-                        infos += SourceInfo(manager.getCameraCharacteristics(id).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, size.first, size.second, false)
+                        infos += SourceInfo(chars(id).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 90, size.first, size.second, false)
                     }
                 }
                 val frontSize = pick(cams.front) ?: return@post finish(null, "No picture size for the front camera")
-                infos += SourceInfo(manager.getCameraCharacteristics(cams.front).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 270, frontSize.first, frontSize.second, true)
+                infos += SourceInfo(chars(cams.front).get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 270, frontSize.first, frontSize.second, true)
                 opens = listOf(Open(cams.rear, rearStreams), Open(cams.front, listOf(Triple(textures.last(), null, frontSize))))
                 if (stills && rearCount == 1) {
                     for (o in opens) {
